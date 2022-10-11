@@ -1,0 +1,35 @@
+{
+  "name": "wallet",
+  "version": "0.1.0",
+  "description": "A more civilized wallet for a less civilized age",
+  "main": "wallet.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "doc": "npx jsdoc@3.x --configure ./jsdoc.conf.json --destination ./docs --package ./package.json --readme ./README.md --access all --private --recurse ./lib/",
+    "fmt": "npx -p prettier@2.x -- prettier -w '**/*.{js,md}'",
+    "lint": "npx -p typescript@4.x -- tsc -p ./jsconfig.json",
+    "prepublish": "npx -p jswt@1.x -- reexport"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dashhive/wallet.js.git"
+  },
+  "keywords": [
+    "dash",
+    "wallet",
+    "xpub",
+    "friends"
+  ],
+  "author": "AJ ONeal <aj@therootcompany.com> (https://throotcompany.com/)",
+  "license": "SEE LICENSE IN LICENSE",
+  "bugs": {
+    "url": "https://github.com/dashhive/wallet.js/issues"
+  },
+  "homepage": "https://github.com/dashhive/wallet.js#readme",
+  "dependencies": {
+    "@root/base58check": "^1.0.0",
+    "@root/passphrase": "^1.1.0",
+    "bip39": "^3.0.4",
+    "hdkey": "github:dashhive/hdkey"
+  }
+}
