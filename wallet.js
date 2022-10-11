@@ -231,7 +231,7 @@
       });
 
       console.info();
-      console.info(`Send DASH to ${handle} with this address:`);
+      console.info(`Send DASH to '${handle}' at this address:`);
       // TODO QR
       console.info(addrFromXPubKey);
     }
