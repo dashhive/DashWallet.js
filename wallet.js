@@ -16,6 +16,12 @@
     coinType: "5",
   };
 
+  let Base58Check = require("@root/base58check").Base58Check;
+  let b58c = Base58Check.create({
+    pubKeyHashVersion: Wallet.DashTypes.pubKeyHashVersion,
+    privateKeyVersion: Wallet.DashTypes.privateKeyVersion,
+  });
+
   /**
    * @typedef Config
    * @prop {Safe} safe
@@ -31,6 +37,7 @@
   /**
    * @typedef Walleter
    * @prop {WalleterBefriend} befriend
+   * @prop {Function} reindex
    */
 
   /**
@@ -48,6 +55,7 @@
   /**
    * @typedef Safe
    * @prop {Object<String, Wallet>} wallets
+   * @prop {Object<String, Wallet>} addresses
    */
 
   /**
@@ -64,7 +72,7 @@
    * @prop {Number} priority
    * @prop {String?} contact
    * @prop {Array<String>} mnemonic
-   * @prop {String?} xpubkey - TODO move to public structure
+   * @prop {String?} xpubkey - TODO move to public structure TODO rename xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
    */
@@ -74,6 +82,7 @@
    * @returns {Promise<Walleter>}
    */
   Wallet.create = async function (config) {
+    let safe = config.safe;
     let wallet = {};
 
     /** @type WalleterBefriend */
@@ -141,7 +150,7 @@
         });
       if (!rxws.length) {
         // TODO use main wallet as seed
-        rxWallet = Wallet.generate(handle, handle, "rx", 0);
+        rxWallet = Wallet.generate(handle, handle, "rx", 0, handle);
 
         for (let i = 1; ; i += 1) {
           if (!safe.wallets[`${handle}:${i}`]) {
@@ -168,8 +177,75 @@
       return [publicParentExtendedKey, txWallet?.xpubkey];
     };
 
-    // init
-    let safe = config.safe;
+    wallet.reindex = async function () {
+      // full and rx wallets
+      await Object.values(safe.wallets).reduce(async function (promise, w) {
+        await promise;
+
+        let derivedRoot;
+        let xpub = w.xpub || w.xpubkey;
+        if (xpub) {
+          derivedRoot = HdKey.fromExtendedKey(xpub);
+          await generateAddresses(w, derivedRoot);
+        } else {
+          let mnemonic = w.mnemonic.join(" ");
+          // TODO use derivation from main for non-imported wallets
+          let seed = await Bip39.mnemonicToSeed(mnemonic);
+          let privateRoot = HdKey.fromMasterSeed(seed);
+          // The full path looks like `m/44'/5'/0'/0/0`
+          // We "harden" the prefix `m/44'/5'/0'/0`
+          let account = 0;
+
+          // rx addresses
+          let direction = 0;
+          let derivationPath = `m/44'/${Wallet.DashTypes.coinType}'/${account}'/${direction}`;
+          derivedRoot = privateRoot.derive(derivationPath);
+          await generateAddresses(w, derivedRoot);
+
+          // change addresses
+          direction = 1;
+          derivationPath = `m/44'/${Wallet.DashTypes.coinType}'/${account}'/${direction}`;
+          derivedRoot = privateRoot.derive(derivationPath);
+          await generateAddresses(w, derivedRoot);
+        }
+
+        // TODO optimize later
+        config.store.save();
+      }, Promise.resolve());
+    };
+
+    /**
+     * @param {PrivateWallet} w
+     * @param {unknown} derivedRoot - TODO
+     */
+    async function generateAddresses(w, derivedRoot) {
+      let count = 0;
+      for (let index = 0; ; index += 1) {
+        //@ts-ignore
+        let derivedChild = derivedRoot.deriveChild(index);
+        let addr = await b58c.encode({
+          version: Wallet.DashTypes.pubKeyHashVersion,
+          pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
+        });
+        let info = safe.addresses[addr];
+        if (!info) {
+          // TODO support non-HD wallets
+          info = Wallet.generateAddress(w.name, index);
+          safe.addresses[addr] = info;
+        }
+        if (!info.txs.length) {
+          count += 1;
+          if (count >= 20) {
+            // this wallet has 20 unused addresses
+            break;
+          }
+        }
+      }
+    }
+
+    if (!safe.addresses) {
+      safe.addresses = {};
+    }
     if (!safe.wallets) {
       safe.wallets = {};
     }
@@ -183,14 +259,30 @@
   };
 
   /**
+   * @param {String} wallet - name of (HD) wallet
+   * @param {Number} index - name of wallet
+   */
+  Wallet.generateAddress = function (wallet, index) {
+    return {
+      index: index,
+      wallet: wallet,
+      utxos: [],
+      txs: [],
+      balance: 0,
+      checked_at: 0,
+    };
+  };
+
+  /**
    * Generate a wallet with creation date set
    * @param {String} name - all lower case
    * @param {String} label - human friendly
    * @param {WalletMode} mode - rx, tx, or full
    * @param {Number} priority - sparse index, lowest is highest
+   * @param {String?} contact - handle of contact
    * @returns {PrivateWallet}
    */
-  Wallet.generate = function (name, label, mode, priority) {
+  Wallet.generate = function (name, label, mode, priority, contact = null) {
     let mnemonic = Bip39.generateMnemonic();
     if (!priority) {
       // TODO maybe just increment from the last?
@@ -201,7 +293,7 @@
       name: name.toLowerCase(),
       label: label,
       device: null,
-      contact: null,
+      contact: contact,
       mode: mode,
       priority: 0,
       mnemonic: mnemonic.split(/[,\s\n\|]+/g),

@@ -62,7 +62,7 @@ async function main() {
   let friend = removeFlag(args, ["friend"]);
   if (friend) {
     await befriend(config, wallet, args);
-    return;
+    return wallet;
   }
 
   if (!args[0]) {
@@ -74,7 +74,7 @@ async function main() {
 
 function usage() {
   console.info(`Usage:`);
-  console.info(`    wallet friend <handle> [xpub]`);
+  console.info(`    wallet [--config-dir x] friend <handle> [xpub]`);
 }
 
 /**
@@ -220,7 +220,10 @@ function removeFlagAndArg(arr, aliases) {
 }
 
 main()
-  .then(function () {
+  .then(async function (wallet) {
+    console.info();
+    console.info("reindexing...");
+    await wallet.reindex();
     console.info();
     process.exit(0);
   })

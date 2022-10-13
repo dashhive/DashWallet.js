@@ -7,7 +7,6 @@ module.exports = require("./lib/wallet.js")
 // these typedef reexports will be available to dependent packages
 /**
  * @typedef {import('./bin/wallet.js').FsStoreConfig} FsStoreConfig
- * @typedef {import('./bin/wallet.js').FsStoreConfig} FsStoreConfig
  * @typedef {import('./wallet.js').Config} Config
  * @typedef {import('./wallet.js').Store} Store
  * @typedef {import('./wallet.js').Walleter} Walleter
