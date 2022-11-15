@@ -19,6 +19,7 @@ let Fs = require("node:fs/promises");
 let Wallet = require("../wallet.js");
 
 let Base58Check = require("@root/base58check").Base58Check;
+let Dashsight = require("dashsight");
 // let Qr = require("./qr.js");
 
 let HdKey = require("hdkey");
@@ -51,6 +52,18 @@ async function main() {
     // TODO check validity
     storeConfig.dir = confDir;
   }
+
+  config.dashsight = Dashsight.create({
+    baseUrl: "", // TODO baseUrl is deprecated and should not be required
+    insightBaseUrl:
+      process.env.INSIGHT_BASE_URL || "https://insight.dash.org/insight-api",
+    dashsightBaseUrl:
+      process.env.DASHSIGHT_BASE_URL ||
+      "https://dashsight.dashincubator.dev/insight-api",
+    dashsocketBaseUrl:
+      process.env.DASHSOCKET_BASE_URL || "https://insight.dash.org/socket.io",
+  });
+
   storeConfig.path = Path.join(storeConfig.dir, "private-keys.json");
   config.store = Storage.create(storeConfig, config);
 
@@ -65,6 +78,18 @@ async function main() {
     return wallet;
   }
 
+  let send = removeFlag(args, ["send", "pay"]);
+  if (send) {
+    await pay(config, wallet, args);
+    return wallet;
+  }
+
+  let showBalances = removeFlag(args, ["balance", "balances"]);
+  if (showBalances) {
+    await getBalances(config, wallet, args);
+    return wallet;
+  }
+
   if (!args[0]) {
     usage();
     process.exit(1);
@@ -73,8 +98,15 @@ async function main() {
 }
 
 function usage() {
+  console.info();
   console.info(`Usage:`);
-  console.info(`    wallet [--config-dir x] friend <handle> [xpub]`);
+  console.info(`    wallet friend <handle> [xpub]`);
+  console.info(`    wallet pay <handle|pay-addr> <DASH> [--addresses <addr>]`);
+  console.info(`    wallet balance`);
+  console.info();
+  console.info(`Global Options:`);
+  console.info(`    --config-dir ~/.config/dash/`);
+  console.info();
 }
 
 /**
@@ -109,6 +141,66 @@ async function befriend(config, wallet, args) {
   console.info(`Share this "dropbox" wallet (xpub) with '${handle}':`);
   // TODO QR
   console.info(rxXPub);
+}
+
+/**
+ * @param {Config} config
+ * @param {Walleter} wallet
+ * @param {Array<String>} args
+ */
+async function pay(config, wallet, args) {
+  let [handle, DASH] = args;
+  if (!handle) {
+    throw Error(
+      `Usage: wallet send <handle> <DASH>\nExample: wallet send @joey 1.0`,
+    );
+  }
+
+  let hasDecimal = DASH?.split(".").length;
+  let satoshis = parseFloat(DASH);
+  if (!hasDecimal || !satoshis) {
+    throw Error(
+      `DASH amount must be given in decimal form, such as 1.0 or 0.00100000`,
+    );
+  }
+
+  //let tx = await wallet.pay({ handle, satoshis });
+  let tx = await wallet.pay(handle, satoshis);
+  console.info("Sent!");
+  console.info();
+  console.info(`${config.insightBaseUrl}/tx/${tx.txid}`);
+  console.info();
+}
+
+/**
+ * @param {Config} config
+ * @param {Walleter} wallet
+ * @param {Array<String>} args
+ */
+async function getBalances(config, wallet, args) {
+  let balance = 0;
+  console.info();
+  console.info("Wallets:");
+  console.info();
+
+  // TODO 'sync' and 'reindex' options
+  let balances = await wallet.balances();
+  Object.entries(balances).forEach(function ([wallet, satoshis]) {
+    // TODO use a more exact wallet identifier and see if the wallet has private keys
+    if (wallet.startsWith("@")) {
+      // ignore non-spendable wallets
+      console.info(`    ${wallet}: [send-only]`);
+      return;
+    }
+
+    balance += satoshis;
+    let floatBalance = parseFloat((satoshis / Wallet.DUFFS).toFixed(8));
+    console.info(`    ${wallet}: ${floatBalance}`);
+  });
+
+  console.info();
+  let floatBalance = parseFloat((balance / Wallet.DUFFS).toFixed(8));
+  console.info(`Total: ${floatBalance}`);
 }
 
 /**
@@ -223,7 +315,8 @@ main()
   .then(async function (wallet) {
     console.info();
     console.info("reindexing...");
-    await wallet.reindex();
+    let now = Date.now();
+    await wallet.reindex(now);
     console.info();
     process.exit(0);
   })
