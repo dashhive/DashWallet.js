@@ -184,8 +184,10 @@
   };
 
   /**
-   * @param {Array<CoreUtxo>} utxos
+   * @template {Pick<CoreUtxo, "satoshis">} T
+   * @param {Array<T>} utxos
    * @param {Number} fullAmount - including fee estimate
+   * @return {Array<T>}
    */
   Dash.getOptimalUtxos = function (utxos, fullAmount) {
     let balance = Dash.getBalance(utxos);
@@ -199,7 +201,7 @@
       return b.satoshis - a.satoshis;
     });
 
-    /** @type Array<CoreUtxo> */
+    /** @type Array<T> */
     let included = [];
     let total = 0;
 
@@ -226,7 +228,8 @@
   };
 
   /**
-   * @param {Array<CoreUtxo>} utxos
+   * @template {Pick<CoreUtxo, "satoshis">} T
+   * @param {Array<T>} utxos
    * @returns {Number}
    */
   Dash.getBalance = function (utxos) {
@@ -320,6 +323,24 @@
     let hash = ripemd.digest();
 
     return hash.toString("hex");
+  };
+
+  /**
+   * @param {Number} duffs - DASH sastoshis
+   * @returns {Number} - float
+   */
+  Dash.toDash = function (duffs) {
+    let floatBalance = parseFloat((duffs / DUFFS).toFixed(8));
+    return floatBalance;
+  };
+
+  /**
+   * @param {Number} duffs - DASH sastoshis
+   * @returns {String} - formatted with all 8 decimal places
+   */
+  Dash.toDashFixed = function (duffs) {
+    let floatBalance = (duffs / DUFFS).toFixed(8);
+    return floatBalance;
   };
 
   if ("undefined" !== typeof module) {

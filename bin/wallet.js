@@ -90,6 +90,13 @@ async function main() {
     return wallet;
   }
 
+  let forceSync = removeFlag(args, ["reindex", "sync"]);
+  if (forceSync) {
+    let now = Date.now();
+    await wallet.reindex(now, true);
+    return wallet;
+  }
+
   if (!args[0]) {
     usage();
     process.exit(1);
@@ -186,13 +193,6 @@ async function getBalances(config, wallet, args) {
   // TODO 'sync' and 'reindex' options
   let balances = await wallet.balances();
   Object.entries(balances).forEach(function ([wallet, satoshis]) {
-    // TODO use a more exact wallet identifier and see if the wallet has private keys
-    if (wallet.startsWith("@")) {
-      // ignore non-spendable wallets
-      console.info(`    ${wallet}: [send-only]`);
-      return;
-    }
-
     balance += satoshis;
     let floatBalance = parseFloat((satoshis / Wallet.DUFFS).toFixed(8));
     console.info(`    ${wallet}: ${floatBalance}`);

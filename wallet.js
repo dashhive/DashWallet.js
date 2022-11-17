@@ -14,8 +14,8 @@
   /** @typedef {import('dashsight').InsightUtxo} InsightUtxo */
 
   //@ts-ignore
-  //let Dashcore = exports.dashcore || require("./lib/dashcore.js");
-  //let Transaction = Dashcore.Transaction;
+  let Dashcore = exports.dashcore || require("./lib/dashcore.js");
+  let Transaction = Dashcore.Transaction;
 
   /**
    * Like CoreUtxo, but only the parts we need for a transaction
@@ -25,6 +25,24 @@
    * @property {String} address - coined pubKeyHash
    * @property {String} script - hex
    * @property {Number} satoshis
+   */
+
+  /**
+   * @typedef WalletAddress
+   * @prop {Number} checked_at
+   * @prop {Number} index - hdkey path index
+   * @prop {Boolean} spendable - if we have the private key (wif)
+   * @prop {Array<[Number, String]>} txs - tx.time and tx.txid
+   * @prop {Array<MiniUtxo>} utxos
+   * @prop {String} wallet - name of wallet (not a true id)
+   */
+
+  /**
+   * @typedef {MiniUtxo & WalletUtxoPartial} WalletUtxo
+   * @typedef WalletUtxoPartial
+   * @prop {Number} index - hdkey path index
+   * @prop {String} wallet - name of wallet (not a true id)
+   * @prop {String} addr - the pay-to address
    */
 
   //@ts-ignore
@@ -52,6 +70,7 @@
   /**
    * @callback Reindexer
    * @param {Number} now - value to be used for 'checked_at'
+   * @param {Boolean} [sync] - force checking recently checked unused addresses
    */
 
   /**
@@ -105,6 +124,7 @@
    * @typedef PayWallet
    * @prop {String} name
    * @prop {String} label
+   * @prop {Array<String>} [mnemonic] - empty array
    * @prop {WalletMode} mode
    * @prop {String?} device
    * @prop {Number} priority
@@ -149,7 +169,7 @@
             return (
               wallet.contact === handle &&
               txXPub === wallet.xpubkey &&
-              "tx" === wallet.mode
+              ["tx"].includes(wallet.mode)
             );
           });
         if (!txWallet) {
@@ -163,7 +183,7 @@
           await config.store.save();
         }
       } else {
-        let txws = wallet.findFriend({ handle });
+        let txws = await wallet.findFriend({ handle });
         txWallet = txws[0];
       }
 
@@ -212,12 +232,19 @@
     };
 
     // TODO 'sync' and 'reindex' options?
-    // TODO show only receive balances, not paid-to-friend balances
+    /**
+     * Show balances of addresses for which we have the private keys (WIF)
+     * @returns {Promise<Object.<String, Number>>}
+     */
     wallet.balances = async function () {
       /** @type {Object.<String, Number>} */
       let balances = {};
 
       Object.values(safe.addresses).forEach(function (addr) {
+        if (!addr.spendable) {
+          return;
+        }
+
         let b = addr.utxos.reduce(
           /**
            * @param {Number} satoshis
@@ -238,17 +265,106 @@
       return balances;
     };
 
+    /**
+     * @returns {Promise<Array<WalletUtxo>>}
+     */
+    wallet.utxos = async function () {
+      /** @type {Array<WalletUtxo>} */
+      let utxos = [];
+
+      Object.values(safe.addresses).forEach(function (addr) {
+        if (!addr.spendable) {
+          return;
+        }
+        addr.utxos.forEach(
+          /** @param {MiniUtxo} utxo */
+          function (utxo) {
+            let _utxo = Object.assign(
+              {
+                // TODO XXX we don't need this twice?
+                addr: addr,
+                wallet: addr.wallet,
+                index: addr.index,
+                // TODO account, direction
+              },
+              utxo,
+            );
+            utxos.push(_utxo);
+          },
+        );
+      });
+
+      return utxos;
+    };
+
     /** @type {WalleterFindFriend} */
     wallet.findFriend = async function ({ handle }) {
       // TODO filter out archived wallets?
       let txws = Object.values(safe.wallets)
         .filter(function (wallet) {
-          return wallet.contact === handle && "tx" === wallet.mode;
+            console.log(wallet.contact, wallet.mode, wallet.contact === handle, ["tx"].includes(wallet.mode), wallet.contact === handle && ["tx"].includes(wallet.mode));
+          // Pay-To
+          return wallet.contact === handle && ["tx"].includes(wallet.mode);
         })
         .sort(function (a, b) {
           return a.priority - b.priority;
         });
       return txws;
+    };
+
+    /** @type {WalleterFindFriend} */
+    wallet.findChangeWallet = async function ({ handle }) {
+      // TODO filter out archived wallets?
+      let txws = Object.values(safe.wallets)
+        .filter(function (wallet) {
+          return (
+            wallet.contact === handle && ["rx", "full"].includes(wallet.mode)
+          );
+        })
+        .sort(function (a, b) {
+          return a.priority - b.priority;
+        });
+      txws.push(safe.wallets.main);
+      return txws;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle - a wallet name
+     * @returns {Promise<String>} - pay address
+     */
+    wallet.nextChangeAddr = async function ({ handle }) {
+      let ws = await wallet.findChangeWallet({ handle });
+      let w = ws[0];
+      let account = 0; // main
+      let direction = 1; // change
+      return await wallet._getNextAddr(w, account, direction);
+    };
+
+    /**
+     * @param {PrivateWallet} w
+     * @param {Number} account - 0 for main / primary
+     * @param {Number} direction - 0 for deposit, 1 for change
+     * TODO give this the correct name
+     */
+    wallet._getNextAddr = async function (w, account, direction) {
+      let mnemonic = w.mnemonic.join(" ");
+      let seed = await Bip39.mnemonicToSeed(mnemonic);
+      let privateRoot = HdKey.fromMasterSeed(seed);
+
+      let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+      let derivedRoot = privateRoot.derive(derivationPath);
+
+      let now = Date.now();
+      let nextIndex = await checkPayAddrs(w, derivedRoot, now);
+      //@ts-ignore - tsc bug
+      let derivedChild = derivedRoot.deriveChild(nextIndex);
+      let nextPayAddr = await b58c.encode({
+        version: DashApi.DashTypes.pubKeyHashVersion,
+        pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
+      });
+
+      return nextPayAddr;
     };
 
     /**
@@ -265,7 +381,7 @@
       }
 
       {
-        let payWallets = wallet.findFriend({ handle });
+        let payWallets = await wallet.findFriend({ handle });
         let payWallet = payWallets[0];
         if (!payWallet) {
           throw new Error(`no pay-to wallet found for '${handle}'`);
@@ -276,7 +392,8 @@
         console.log(
           `[DEBUG] checking friend xpub wallet '${payWallet.name}'...`,
         );
-        let nextIndex = await discoverAddresses(payWallet, derivedRoot, now);
+        let nextIndex = await checkPayAddrs(payWallet, derivedRoot, now);
+        //@ts-ignore - tsc bug
         let derivedChild = derivedRoot.deriveChild(nextIndex);
         nextPayAddr = await b58c.encode({
           version: DashApi.DashTypes.pubKeyHashVersion,
@@ -286,15 +403,19 @@
 
       // TODO figure out how to send good utxos from multiple coins
       // (and multiple wallets)
-      let utxoAddr = await Wallet.wifToAddr(privKey);
+      /*
+      let utxoAddr = await DashApi.wifToAddr(privKey);
       if (!changeAddr) {
         changeAddr = utxoAddr;
       }
+      */
 
-      // TODO make more accurate?
+      let allUtxos = await wallet.utxos();
+
+      // TODO make more accurate? How many bytes per additional utxo? signature?
       let feePreEstimate = 1000;
-      let insightUtxos = await dashsight.getUtxos(utxoAddr);
-      let allUtxos = await DashApi.getUtxos(insightUtxos);
+      //let insightUtxos = await dashsight.getUtxos(utxoAddr);
+      //let allUtxos = await DashApi.getUtxos(insightUtxos);
       let utxos = await DashApi.getOptimalUtxos(
         allUtxos,
         amount + feePreEstimate,
@@ -302,8 +423,15 @@
       let balance = DashApi.getBalance(utxos);
 
       if (!utxos.length) {
-        throw new Error(`not enough funds available in utxos for ${utxoAddr}`);
+        let totalBalance = DashApi.getBalance(allUtxos);
+        let dashBalance = DashApi.toDash(totalBalance);
+        let dashAmount = DashApi.toDash(amount);
+        throw new Error(
+          `insufficient funds: cannot pay ${dashAmount} (+fees) with ${dashBalance}`,
+        );
       }
+
+      let wifs = await wallet._utxosToWifs(utxos);
 
       // (estimate) don't send dust back as change
       if (balance - amount <= DashApi.DUST + DashApi.FEE) {
@@ -316,8 +444,11 @@
         .from(utxos);
       tmpTx.to(nextPayAddr, amount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
+      let changeAddr = await wallet.nextChangeAddr({ handle });
       tmpTx.change(changeAddr);
-      tmpTx.sign(pk);
+      tmpTx.sign(wifs);
+
+      throw new Error("not implemented!");
 
       // TODO getsmartfeeestimate??
       // fee = 1duff/byte (2 chars hex is 1 byte)
@@ -343,6 +474,88 @@
       return tx;
     };
 
+    /**
+     * @param {Array<WalletUtxo>} utxos
+     * @returns {Promise<Array<String>>} - wifs
+     */
+    wallet._utxosToWifs = async function (utxos) {
+      /** @type {Object.<String, Boolean>} */
+      let wifs = {};
+
+      utxos.reduce(async function (promise, utxo) {
+        await promise;
+
+        // TODO move earlier?
+        let w = Object.values(safe.wallets).find(function (wallet) {
+          return (
+            wallet.name === utxo.wallet && ["rx", "full"].includes(wallet.mode)
+          );
+        });
+
+        let account = 0;
+        let deposit = 0;
+        let [addr1, wif1] = await wallet._toKeypair(
+          w,
+          account,
+          deposit,
+          utxo.index,
+        );
+        if (addr1 === utxo.addr) {
+          wifs[wif1] = true;
+          return;
+        }
+
+        let change = 1;
+        let [addr2, wif2] = await wallet._toKeypair(
+          w,
+          account,
+          change,
+          utxo.index,
+        );
+        if (addr2 === utxo.addr) {
+          wifs[wif2] = true;
+          return;
+        }
+
+        throw new Error(
+          `could not find private key for utxo '${utxo.txId}' for '${utxo.address}'`,
+        );
+      }, Promise.resolve());
+
+      return Object.keys(wifs);
+    };
+
+    /**
+     * @param {PrivateWallet} w
+     * @param {Number} account
+     * @param {Number} direction
+     * @param {Number} index
+     * @returns {Promise<[String, String]>} - addr, wif
+     */
+    wallet._toKeypair = async function (w, account, direction, index) {
+      let mnemonic = w.mnemonic.join(" ");
+      let seed = await Bip39.mnemonicToSeed(mnemonic);
+      let privateRoot = HdKey.fromMasterSeed(seed);
+
+      let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+      let derivedRoot = privateRoot.derive(derivationPath);
+
+      let now = Date.now();
+      let nextIndex = await checkPayAddrs(w, derivedRoot, now);
+      //@ts-ignore - tsc bug
+      let derivedChild = derivedRoot.deriveChild(nextIndex);
+
+      let addr = await b58c.encode({
+        version: DashApi.DashTypes.pubKeyHashVersion,
+        pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
+      });
+      let wif = await b58c.encode({
+        version: DashApi.DashTypes.privateKeyVersion,
+        pubKeyHash: derivedChild.privateKey.toString("hex"),
+      });
+      return [addr, wif];
+    };
+
     // 1. Check cached addresses until finding 20 with no transactions
     // 2. Check 20 forward from last index for any transaction at all
     //    - If yes, check for balance
@@ -350,7 +563,7 @@
     // 3. Check empty (sparse) addresses for transactions
     // 4. For anything that has a balance, check again
     /**@type {Reindexer} */
-    wallet.reindex = async function (now) {
+    wallet.reindex = async function (now, sync) {
       // full and rx wallets
       await Object.values(safe.wallets).reduce(async function (promise, w) {
         await promise;
@@ -360,7 +573,7 @@
         if (xpub) {
           derivedRoot = HdKey.fromExtendedKey(xpub);
           console.log(`[DEBUG] checking xpub wallet '${w.name}'...`);
-          await discoverAddresses(w, derivedRoot, now);
+          await checkPayAddrs(w, derivedRoot, now, sync);
         } else {
           let mnemonic = w.mnemonic.join(" ");
           // TODO use derivation from main for non-imported wallets
@@ -376,7 +589,7 @@
           console.log("[DEBUG] derivationPath:", derivationPath);
           derivedRoot = privateRoot.derive(derivationPath);
           console.log(`[DEBUG] checking DEPOSIT wallet '${w.name}'...`);
-          await discoverAddresses(w, derivedRoot, now);
+          await checkPayAddrs(w, derivedRoot, now, sync);
 
           // change addresses
           direction = 1;
@@ -384,7 +597,7 @@
           console.log("[DEBUG] derivationPath:", derivationPath);
           derivedRoot = privateRoot.derive(derivationPath);
           console.log(`[DEBUG] checking for CHANGE in '${w.name}'...`);
-          await discoverAddresses(w, derivedRoot, now);
+          await checkPayAddrs(w, derivedRoot, now, sync);
         }
 
         // TODO optimize later
@@ -396,9 +609,10 @@
      * @param {PayWallet|PrivateWallet} w
      * @param {unknown} derivedRoot - TODO
      * @param {Number} now
+     * @param {Boolean} [sync] - force checking for updates, even if just checked
      * @returns {Promise<Number>} - the next, possibly sparse, unused address index
      */
-    async function discoverAddresses(w, derivedRoot, now) {
+    async function checkPayAddrs(w, derivedRoot, now, sync) {
       let MAX_SPARSE_UNCHECKED = 20;
       let MAX_SPARSE_CHECKED = 5;
 
@@ -440,11 +654,16 @@
         let info = safe.addresses[addr];
         if (!info) {
           // TODO support non-HD wallets
-          info = Wallet.generateAddress(w.name, index);
+          info = Wallet.generateAddress(w.name, index, w.mnemonic?.length > 0);
           safe.addresses[addr] = info;
         }
 
-        if (!info.txs.length) {
+        // TODO we need a global option for this
+        let fresh = now - info.checked_at < 60 * 1000;
+        if (sync) {
+          fresh = false;
+        }
+        if (!info.txs.length && !fresh) {
           let insightTxs = await dashsight.getTxs(addr, 1);
           let tx = insightTxs.txs[0];
           if (tx?.time) {
@@ -452,11 +671,11 @@
             let txid = tx.txid;
             info.txs.push([tx.time, txid]);
             // TODO second pass is to check utxos again
-            info.checked_at = now;
             info.utxos = await getMiniUtxos(addr);
           } else {
             console.log(`[DEBUG] update ${index}: NO txs`);
           }
+          info.checked_at = now;
         }
         // TODO also skip addresses that are known to be pending receiving a payment?
         if (info.txs.length) {
@@ -517,15 +736,18 @@
   /**
    * @param {String} wallet - name of (HD) wallet
    * @param {Number} index - name of wallet
+   * @param {Boolean} spendable - true if we have the private key for this address
+   * @returns {WalletAddress}
    */
-  Wallet.generateAddress = function (wallet, index) {
+  Wallet.generateAddress = function (wallet, index, spendable) {
+    // TODO `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}/${index}`
     return {
-      index: index,
-      wallet: wallet,
-      utxos: [],
-      txs: [],
-      balance: 0,
       checked_at: 0,
+      index: index,
+      spendable,
+      txs: [],
+      utxos: [],
+      wallet: wallet,
     };
   };
 
