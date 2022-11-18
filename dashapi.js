@@ -305,9 +305,31 @@
     let pubBuf = Secp256k1.publicKeyCreate(privBuf);
     let addr = await b58c.encode({
       version: Dash.DashTypes.pubKeyHashVersion,
-      pubKeyHash: await Wallet._hashPubkey(pubBuf),
+      pubKeyHash: await Dash._hashPubkey(pubBuf),
+      compressed: true,
     });
     return addr;
+  };
+
+  /**
+   * @template {Pick<InsightUtxo,
+   *  "txid"|"vout"|"address"|"scriptPubKey"|"satoshis"
+   * >} T
+   * @param {Array<T>} insightUtxos
+   * @returns {Array<CoreUtxo>}
+   */
+  Dash.toCoreUtxos = function (insightUtxos) {
+    let coreUtxos = insightUtxos.map(function (utxo) {
+      return {
+        txId: utxo.txid,
+        outputIndex: utxo.vout,
+        address: utxo.address,
+        script: utxo.scriptPubKey,
+        satoshis: utxo.satoshis,
+      };
+    });
+
+    return coreUtxos;
   };
 
   /**
@@ -323,6 +345,14 @@
     let hash = ripemd.digest();
 
     return hash.toString("hex");
+  };
+
+  /**
+   * @param {Number} dash - as DASH (not duffs / satoshis)
+   * @returns {Number} - duffs
+   */
+  Dash.toDuff = function (dash) {
+    return Math.round(dash * DUFFS);
   };
 
   /**

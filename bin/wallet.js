@@ -108,8 +108,10 @@ function usage() {
   console.info();
   console.info(`Usage:`);
   console.info(`    wallet friend <handle> [xpub]`);
+  // TODO --tx-only, or --dry-run
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--addresses <addr>]`);
   console.info(`    wallet balance`);
+  console.info(`    wallet sync`);
   console.info();
   console.info(`Global Options:`);
   console.info(`    --config-dir ~/.config/dash/`);
@@ -137,6 +139,7 @@ async function befriend(config, wallet, args) {
     let addrFromXPubKey = await b58c.encode({
       version: Wallet.DashTypes.pubKeyHashVersion,
       pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
+      compressed: true,
     });
     console.info();
     console.info(`Send DASH to '${handle}' at this address:`);
@@ -164,7 +167,7 @@ async function pay(config, wallet, args) {
   }
 
   let hasDecimal = DASH?.split(".").length;
-  let satoshis = parseFloat(DASH);
+  let satoshis = Wallet.toDuff(parseFloat(DASH));
   if (!hasDecimal || !satoshis) {
     throw Error(
       `DASH amount must be given in decimal form, such as 1.0 or 0.00100000`,
@@ -323,5 +326,8 @@ main()
   .catch(function (err) {
     console.error("Fail:");
     console.error(err.stack || err);
+    if (err.response) {
+      console.error(err.response);
+    }
     process.exit(1);
   });
