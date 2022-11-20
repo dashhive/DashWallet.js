@@ -216,7 +216,7 @@ async function pay(config, wallet, args) {
   console.info();
   console.info("Sent!");
   console.info();
-  console.info(`${config.insightBaseUrl}/tx/${txResult.txid}`);
+  console.info(`https://insight.dash.org/tx/${txResult.body.txid}`);
   console.info();
 }
 
