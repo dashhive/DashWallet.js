@@ -1,15 +1,15 @@
 {
   "name": "dashwallet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A more civilized wallet for a less civilized age",
   "main": "index.js",
   "bin": {
-      "dashwallet": "bin/wallet.js"
+    "dashwallet": "bin/wallet.js"
   },
   "files": [
-      "dashapi.js",
-      "index.js",
-      "wallet.js"
+    "dashapi.js",
+    "index.js",
+    "wallet.js"
   ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
