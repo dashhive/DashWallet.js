@@ -132,10 +132,11 @@ async function main() {
 function usage() {
   console.info();
   console.info(`Usage:`);
+  console.info(`    wallet balances`);
   console.info(`    wallet friend <handle> [xpub]`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
-  console.info(`    wallet balance`);
   console.info(`    wallet sync`);
+  console.info(`    wallet version`);
   console.info();
   console.info(`Global Options:`);
   console.info(`    --config-dir ~/.config/dash/`);
@@ -357,16 +358,24 @@ function removeFlagAndArg(arr, aliases) {
 
 main()
   .then(async function (wallet) {
-    console.info();
-    console.info("reindexing...");
-    let now = Date.now();
-    await wallet.sync({ now: now });
-    console.info();
+    if (wallet) {
+      console.info();
+      console.info("reindexing...");
+      let now = Date.now();
+      await wallet.sync({ now: now });
+      console.info();
+    }
     process.exit(0);
   })
   .catch(function (err) {
     console.error("Fail:");
     console.error(err.stack || err);
+    if (err.failedTx) {
+      console.error(
+        "Failed Transaciton: (inspect at https://live.blockcypher.com/dash/decodetx/)",
+      );
+      console.error(err.failedTx);
+    }
     if (err.response) {
       console.error(err.response);
     }

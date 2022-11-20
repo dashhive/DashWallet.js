@@ -403,7 +403,14 @@
     wallet.pay = async function ({ handle, amount }) {
       let txHex = await wallet.createTx({ handle, amount });
 
-      let result = await dashsight.instantSend(txHex);
+      let result = await dashsight.instantSend(txHex).catch(
+        /** @param {Error} err */
+        function (err) {
+          //@ts-ignore
+          err.failedTx = txHex;
+          throw err;
+        },
+      );
       return result;
     };
 
