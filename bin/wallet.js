@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 
+//@ts-ignore
+let pkg = require("../package.json");
+
 /**
  * @typedef {import('../').Config} Config
  * @typedef {import('../').Safe} Safe
@@ -80,6 +83,13 @@ async function main() {
   let wallet = await Wallet.create(config);
   await config.store.save();
 
+  let version = removeFlag(args, ["version", "-V", "--version"]);
+  if (version) {
+    console.info(`dashwallet v${pkg.version}`);
+    process.exit(0);
+    return;
+  }
+
   let friend = removeFlag(args, ["friend"]);
   if (friend) {
     await befriend(config, wallet, args);
@@ -108,7 +118,13 @@ async function main() {
 
   if (!args[0]) {
     usage();
+    let help = removeFlag(args, ["help", "--help", "-h"]);
+    if (help) {
+      process.exit(0);
+      return;
+    }
     process.exit(1);
+    return;
   }
   throw new Error(`'${args[0]}' is not a recognized subcommand`);
 }
