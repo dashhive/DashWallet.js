@@ -16,7 +16,8 @@
     "doc": "npx jsdoc@3.x --configure ./jsdoc.conf.json --destination ./docs --package ./package.json --readme ./README.md --access all --private --recurse ./lib/",
     "fmt": "npx -p prettier@2.x -- prettier -w '**/*.{js,md}'",
     "lint": "npx -p typescript@4.x -- tsc -p ./jsconfig.json",
-    "prepublish": "npx -p jswt@1.x -- reexport"
+    "prepublish": "npx -p jswt@1.x -- reexport",
+    "version": "npm version -m \"chore(release): bump to v%s\""
   },
   "repository": {
     "type": "git",
