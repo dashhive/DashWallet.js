@@ -101,6 +101,7 @@ async function main() {
   let forceSync = removeFlag(args, ["reindex", "sync"]);
   if (forceSync) {
     let now = Date.now();
+    console.info("syncing...");
     await wallet.sync({ now: now, staletime: 0 });
     return wallet;
   }
@@ -166,6 +167,8 @@ async function befriend(config, wallet, args) {
  * @param {Array<String>} args
  */
 async function pay(config, wallet, args) {
+  let dryRun = removeFlag(args, ["--dry-run"]);
+
   let [handle, DASH] = args;
   if (!handle) {
     throw Error(
@@ -180,8 +183,6 @@ async function pay(config, wallet, args) {
       `DASH amount must be given in decimal form, such as 1.0 or 0.00100000`,
     );
   }
-
-  let dryRun = removeFlag(args, ["--dry-run"]);
 
   let txHex = await wallet.createTx({ handle, amount: satoshis });
 
