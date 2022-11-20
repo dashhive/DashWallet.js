@@ -164,6 +164,19 @@
       if (!handle) {
         throw new Error(`no 'handle' given`);
       }
+
+      try {
+        HdKey.fromExtendedKey(xpub);
+      } catch (e) {
+        //@ts-ignore - tsc bug
+        if (!e.message.includes("Invalid checksum")) {
+          throw e;
+        }
+        throw new Error(
+          `failed to parse contact's xpub (bad checksum): '${xpub}'`,
+        );
+      }
+
       let txXPub = xpub;
 
       let safe = config.safe;
