@@ -4,7 +4,7 @@
 /**
  * @typedef {import('../').Config} Config
  * @typedef {import('../').Safe} Safe
- * @typedef {import('../').Walleter} Walleter
+ * @typedef {import('../').WalletInstance} WalletInstance
  */
 
 let Os = require("node:os");
@@ -66,6 +66,14 @@ async function main() {
 
   storeConfig.path = Path.join(storeConfig.dir, "private-keys.json");
   config.store = Storage.create(storeConfig, config);
+  // TODO
+  //getWallets / getEachWallet
+  //getWallets
+  //getWallet
+  //setWallet
+  //getAddresses / getEachAddress
+  //getAddress
+  //setAddress
 
   config.safe = await config.store.init(storeConfig);
 
@@ -93,7 +101,7 @@ async function main() {
   let forceSync = removeFlag(args, ["reindex", "sync"]);
   if (forceSync) {
     let now = Date.now();
-    await wallet.reindex(now, true);
+    await wallet.sync({ now: now, staletime: 0 });
     return wallet;
   }
 
@@ -108,8 +116,7 @@ function usage() {
   console.info();
   console.info(`Usage:`);
   console.info(`    wallet friend <handle> [xpub]`);
-  // TODO --tx-only, or --dry-run
-  console.info(`    wallet pay <handle|pay-addr> <DASH> [--addresses <addr>]`);
+  console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
   console.info(`    wallet balance`);
   console.info(`    wallet sync`);
   console.info();
@@ -120,7 +127,7 @@ function usage() {
 
 /**
  * @param {Config} config
- * @param {Walleter} wallet
+ * @param {WalletInstance} wallet
  * @param {Array<String>} args
  */
 async function befriend(config, wallet, args) {
@@ -155,7 +162,7 @@ async function befriend(config, wallet, args) {
 
 /**
  * @param {Config} config
- * @param {Walleter} wallet
+ * @param {WalletInstance} wallet
  * @param {Array<String>} args
  */
 async function pay(config, wallet, args) {
@@ -174,26 +181,44 @@ async function pay(config, wallet, args) {
     );
   }
 
-  //let tx = await wallet.pay({ handle, satoshis });
-  let tx = await wallet.pay(handle, satoshis);
+  let dryRun = removeFlag(args, ["--dry-run"]);
+
+  let txHex = await wallet.createTx({ handle, amount: satoshis });
+
+  if (dryRun) {
+    console.info();
+    console.info(
+      "Transaction Hex: (inspect at https://live.blockcypher.com/dash/decodetx/)",
+    );
+    console.info(txHex);
+    console.info();
+    return;
+  }
+
+  let txResult = await config.dashsight.instantSend(txHex);
+  console.info();
   console.info("Sent!");
   console.info();
-  console.info(`${config.insightBaseUrl}/tx/${tx.txid}`);
+  console.info(`${config.insightBaseUrl}/tx/${txResult.txid}`);
   console.info();
 }
 
 /**
  * @param {Config} config
- * @param {Walleter} wallet
+ * @param {WalletInstance} wallet
  * @param {Array<String>} args
  */
 async function getBalances(config, wallet, args) {
   let balance = 0;
+
+  console.info("syncing...");
+  let now = Date.now();
+  await wallet.sync({ now });
+
   console.info();
   console.info("Wallets:");
   console.info();
 
-  // TODO 'sync' and 'reindex' options
   let balances = await wallet.balances();
   Object.entries(balances).forEach(function ([wallet, satoshis]) {
     balance += satoshis;
@@ -237,6 +262,9 @@ let Storage = {}; //jshint ignore:line
  * @param {Config} config
  */
 Storage.create = function (storeConfig, config) {
+  /** @type {Safe} */
+  let safe;
+
   /**
    * @returns {Promise<Safe>}
    */
@@ -248,7 +276,7 @@ Storage.create = function (storeConfig, config) {
 
     let text = await Fs.readFile(storeConfig.path, "utf8");
     /** @type {Safe} */
-    let safe = JSON.parse(text || "{}");
+    safe = JSON.parse(text || "{}");
 
     return safe;
   }
@@ -257,11 +285,7 @@ Storage.create = function (storeConfig, config) {
    * Safely save the safe
    */
   async function save() {
-    await safeReplace(
-      storeConfig.path,
-      JSON.stringify(config.safe, null, 2),
-      "utf8",
-    );
+    await safeReplace(storeConfig.path, JSON.stringify(safe, null, 2), "utf8");
   }
 
   return {
@@ -319,7 +343,7 @@ main()
     console.info();
     console.info("reindexing...");
     let now = Date.now();
-    await wallet.reindex(now);
+    await wallet.sync({ now: now });
     console.info();
     process.exit(0);
   })

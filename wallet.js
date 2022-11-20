@@ -10,7 +10,10 @@
   //let Passphrase = require("@root/passphrase");
   let DashApi = require("./dashapi.js");
 
-  /** @typedef {import('dashsight').DashSightInstance} DashSightInstance */
+  /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
+  /** @typedef {import('dashsight').GetTxs} GetTxs */
+  /** @typedef {import('dashsight').GetUtxos} GetUtxos */
+  /** @typedef {import('dashsight').InstantSend} InstantSend */
   /** @typedef {import('dashsight').InsightUtxo} InsightUtxo */
 
   //@ts-ignore
@@ -32,7 +35,6 @@
    * @prop {Number} checked_at
    * @prop {String} hdpath - hdkey path (ex: "m/44'/5'/0'/0")
    * @prop {Number} index - hdkey path index
-   * @prop {Boolean} spendable - if we have the private key (wif)
    * @prop {Array<[Number, String]>} txs - tx.time and tx.txid
    * @prop {Array<MiniUtxo>} utxos
    * @prop {String} wallet - name of wallet (not a true id)
@@ -46,7 +48,14 @@
    * @prop {Safe} safe
    * @prop {Store} store
    * @prop {Wallet} main
-   * @prop {DashSightInstance} dashsight
+   * @prop {DashSightPartial} dashsight
+   */
+
+  /**
+   * @typedef DashSightPartial
+   * @prop {InstantSend} instantSend
+   * @prop {GetTxs} getTxs
+   * @prop {GetUtxos} getUtxos
    */
 
   /**
@@ -55,21 +64,24 @@
    */
 
   /**
-   * @typedef Walleter
-   * @prop {WalleterBefriend} befriend
-   * @prop {Reindexer} reindex
+   * @typedef WalletInstance
+   * @prop {Befriend} befriend
+   * @prop {Sync} sync
    */
 
   /**
-   * @callback Reindexer
-   * @param {Number} now - value to be used for 'checked_at'
-   * @param {Boolean} [sync] - force checking recently checked unused addresses
+   * @callback Sync
+   * @param {SyncOpts} opts
+   *
+   * @typedef SyncOpts
+   * @prop {Number} now - value to be used for 'checked_at'
+   * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
    */
 
   /**
    * // TODO doc: send-only (to you) xpub key to share with friend
    * Add and/or generate a friend's xpub key
-   * @callback WalleterBefriend
+   * @callback Befriend
    * @param {BefriendOpts} opts
    * @returns {Promise<[String, String]>} - rxXPub & txXPub
    *
@@ -80,7 +92,7 @@
 
   /**
    * Find a friend's xpub key
-   * @callback WalleterFindFriend
+   * @callback FindFriendWallet
    * @param {FindFriendOpts} opts
    * @returns {Array<PayWallet>} - wallets matching this friend
    *
@@ -90,7 +102,7 @@
 
   /**
    * Find a change wallet
-   * @callback WalleterFindChange
+   * @callback FindChangeWallet
    * @param {FindFriendOpts} opts
    * @returns {Array<PrivateWallet>} - wallets matching this friend
    */
@@ -115,7 +127,7 @@
    * @prop {Number} priority
    * @prop {String?} contact
    * @prop {Array<String>} mnemonic
-   * @prop {String?} xpubkey - TODO move to public structure TODO rename xpub
+   * @prop {String?} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
    */
@@ -129,7 +141,7 @@
    * @prop {String?} device
    * @prop {Number} priority
    * @prop {String?} contact
-   * @prop {String} xpubkey - TODO move to public structure TODO rename xpub
+   * @prop {String} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
    */
@@ -140,14 +152,14 @@
 
   /**
    * @param {Config} config
-   * @returns {Promise<Walleter>}
+   * @returns {Promise<WalletInstance>}
    */
   Wallet.create = async function (config) {
     let safe = config.safe;
     let wallet = {};
     let dashsight = config.dashsight;
 
-    /** @type WalleterBefriend */
+    /** @type Befriend */
     wallet.befriend = async function ({ handle, xpub }) {
       if (!handle) {
         throw new Error(`no 'handle' given`);
@@ -169,12 +181,15 @@
           .find(function (wallet) {
             return (
               wallet.contact === handle &&
-              txXPub === wallet.xpubkey &&
+              txXPub === wallet.xpub &&
               ["tx"].includes(wallet.mode)
             );
           });
         if (!txWallet) {
-          txWallet = Wallet.importXPub(handle, txXPub);
+          txWallet = Wallet.generateXPubWallet({
+            handle: handle,
+            xpub: txXPub,
+          });
           for (let i = 1; ; i += 1) {
             if (!safe.wallets[`${handle}:${i}`]) {
               safe.wallets[`${handle}:${i}`] = txWallet;
@@ -205,7 +220,13 @@
         });
       if (!rxws.length) {
         // TODO use main wallet as seed
-        rxWallet = Wallet.generate(handle, handle, "rx", 0, handle);
+        rxWallet = Wallet.generate({
+          name: handle,
+          label: handle,
+          mode: "rx",
+          priority: 0,
+          contact: handle,
+        });
 
         for (let i = 1; ; i += 1) {
           if (!safe.wallets[`${handle}:${i}`]) {
@@ -229,12 +250,12 @@
       let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
       let publicParentExtendedKey =
         privateRoot.derive(derivationPath).publicExtendedKey;
-      return [publicParentExtendedKey, txWallet?.xpubkey];
+      return [publicParentExtendedKey, txWallet?.xpub];
     };
 
-    // TODO 'sync' and 'reindex' options?
     /**
      * Show balances of addresses for which we have the private keys (WIF)
+     * (don't forget to sync first!)
      * @returns {Promise<Object.<String, Number>>}
      */
     wallet.balances = async function () {
@@ -242,7 +263,7 @@
       let balances = {};
 
       Object.values(safe.addresses).forEach(function (addr) {
-        if (!addr.spendable) {
+        if (!addr.hdpath) {
           return;
         }
 
@@ -267,7 +288,7 @@
     };
 
     /**
-     * @returns {Promise<Array<MiniUtxo>>}
+     * @returns {Promise<Array<CoreUtxo>>}
      */
     wallet.utxos = async function () {
       /** @type {Array<Required<MiniUtxo>>} */
@@ -275,7 +296,7 @@
 
       Object.keys(safe.addresses).forEach(function (addr) {
         let addrInfo = safe.addresses[addr];
-        if (!addrInfo.spendable) {
+        if (!addrInfo.hdpath) {
           return;
         }
         addrInfo.utxos.forEach(
@@ -290,18 +311,11 @@
       return utxos;
     };
 
-    /** @type {WalleterFindFriend} */
+    /** @type {FindFriendWallet} */
     wallet.findFriend = async function ({ handle }) {
       // TODO filter out archived wallets?
       let txws = Object.values(safe.wallets)
         .filter(function (wallet) {
-          console.log(
-            wallet.contact,
-            wallet.mode,
-            wallet.contact === handle,
-            ["tx"].includes(wallet.mode),
-            wallet.contact === handle && ["tx"].includes(wallet.mode),
-          );
           // Pay-To
           return wallet.contact === handle && ["tx"].includes(wallet.mode);
         })
@@ -311,7 +325,7 @@
       return txws;
     };
 
-    /** @type {WalleterFindChange } */
+    /** @type {FindChangeWallet } */
     wallet.findChangeWallet = async function ({ handle }) {
       // TODO filter out archived wallets?
       let txws = Object.values(safe.wallets)
@@ -369,22 +383,23 @@
 
     /**
      * Send with change back to main wallet
-     * @param {String} handle
-     * @param {Number} amount - in whole satoshis
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.amount - duffs/satoshis
      */
-    wallet.pay = async function (handle, amount) {
-      let txHex = await wallet._createTx(handle, amount);
-      console.log(txHex);
+    wallet.pay = async function ({ handle, amount }) {
+      let txHex = await wallet.createTx({ handle, amount });
 
       let result = await dashsight.instantSend(txHex);
       return result;
     };
 
     /**
-     * @param {String} handle
-     * @param {Number} amount - in whole satoshis
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.amount - duffs/satoshis
      */
-    wallet._createTx = async function (handle, amount) {
+    wallet.createTx = async function ({ handle, amount }) {
       let nextPayAddr = "";
       if (34 === handle.length) {
         if (["X", "Y"].includes(handle[0])) {
@@ -400,10 +415,7 @@
         }
 
         let now = Date.now();
-        let derivedRoot = HdKey.fromExtendedKey(payWallet.xpubkey || "");
-        console.log(
-          `[DEBUG] checking friend xpub wallet '${payWallet.name}'...`,
-        );
+        let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub || "");
         let nextIndex = await checkPayAddrs(payWallet, derivedRoot, "", now);
         //@ts-ignore - tsc bug
         let derivedChild = derivedRoot.deriveChild(nextIndex);
@@ -413,15 +425,6 @@
           compressed: true,
         });
       }
-
-      // TODO figure out how to send good utxos from multiple coins
-      // (and multiple wallets)
-      /*
-      let utxoAddr = await DashApi.wifToAddr(privKey);
-      if (!changeAddr) {
-        changeAddr = utxoAddr;
-      }
-      */
 
       let allUtxos = await wallet.utxos();
 
@@ -492,14 +495,13 @@
     };
 
     /**
-     * @param {Array<MiniUtxo>} utxos
+     * @param {Array<CoreUtxo>} utxos
      * @returns {Promise<Array<String>>} - wifs
      */
     wallet._utxosToWifs = async function (utxos) {
       /** @type {Object.<String, Boolean>} */
       let wifs = {};
 
-      console.log("utxos.length", utxos.length);
       await utxos.reduce(async function (promise, utxo) {
         await promise;
 
@@ -508,7 +510,6 @@
       }, Promise.resolve());
 
       let wifkeys = Object.keys(wifs);
-      console.log("yo yo yo", wifkeys.length);
       return wifkeys;
     };
 
@@ -541,11 +542,6 @@
       //@ts-ignore - tsc bug
       let derivedChild = derivedRoot.deriveChild(addrInfo.index);
 
-      console.log("NAME", w.name);
-      console.log("addr", addr);
-      console.log("HDPath", addrInfo.hdpath);
-      console.log("Index", addrInfo.index);
-
       let address = await b58c.encode({
         version: DashApi.DashTypes.pubKeyHashVersion,
         pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
@@ -570,18 +566,17 @@
     //    - if it has txs and no balance, it's probably donezo
     // 3. Check empty (sparse) addresses for transactions
     // 4. For anything that has a balance, check again
-    /**@type {Reindexer} */
-    wallet.reindex = async function (now, sync) {
+    /**@type {Sync} */
+    wallet.sync = async function ({ now, staletime = 60 * 1000 }) {
       // full and rx wallets
       await Object.values(safe.wallets).reduce(async function (promise, w) {
         await promise;
 
         let derivedRoot;
-        let xpub = w.xpub || w.xpubkey;
+        let xpub = w.xpub;
         if (xpub) {
           derivedRoot = HdKey.fromExtendedKey(xpub);
-          console.log(`[DEBUG] checking xpub wallet '${w.name}'...`);
-          await checkPayAddrs(w, derivedRoot, "", now, sync);
+          await checkPayAddrs(w, derivedRoot, "", now, staletime);
         } else {
           let mnemonic = w.mnemonic.join(" ");
           // TODO use derivation from main for non-imported wallets
@@ -594,18 +589,14 @@
           // rx addresses
           let direction = 0;
           let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-          console.log("[DEBUG] derivationPath:", derivationPath);
           derivedRoot = privateRoot.derive(derivationPath);
-          console.log(`[DEBUG] checking DEPOSIT wallet '${w.name}'...`);
-          await checkPayAddrs(w, derivedRoot, derivationPath, now, sync);
+          await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
 
           // change addresses
           direction = 1;
           derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-          console.log("[DEBUG] derivationPath:", derivationPath);
           derivedRoot = privateRoot.derive(derivationPath);
-          console.log(`[DEBUG] checking for CHANGE in '${w.name}'...`);
-          await checkPayAddrs(w, derivedRoot, derivationPath, now, sync);
+          await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
         }
 
         // TODO optimize later
@@ -618,10 +609,16 @@
      * @param {import('hdkey')} derivedRoot - TODO
      * @param {String} hdpath - derivation path
      * @param {Number} now
-     * @param {Boolean} [sync] - force checking for updates, even if just checked
+     * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<Number>} - the next, possibly sparse, unused address index
      */
-    async function checkPayAddrs(w, derivedRoot, hdpath, now, sync) {
+    async function checkPayAddrs(
+      w,
+      derivedRoot,
+      hdpath,
+      now,
+      staletime = 60 * 1000,
+    ) {
       let MAX_SPARSE_UNCHECKED = 20;
       let MAX_SPARSE_CHECKED = 5;
 
@@ -650,7 +647,7 @@
           break;
         }
       }
-      console.log("[DEBUG] recentlyUsedIndex", recentlyUsedIndex);
+      //console.log("[DEBUG] recentlyUsedIndex", recentlyUsedIndex);
 
       count = 0;
       for (let index = recentlyUsedIndex; ; ) {
@@ -665,29 +662,27 @@
         });
         let info = safe.addresses[addr];
         if (!info) {
-          // TODO support non-HD wallets
-          let len = w.mnemonic?.length || 0;
-          info = Wallet.generateAddress(w.name, hdpath, index, len > 0);
+          info = Wallet.generateAddress({
+            wallet: w.name,
+            hdpath: hdpath,
+            index: index,
+          });
           safe.addresses[addr] = info;
         }
 
-        // TODO we need a global option for this
-        let fresh = now - info.checked_at < 60 * 1000;
-        if (sync) {
-          fresh = false;
-        }
+        let fresh = now - info.checked_at < staletime;
         if (!info.txs.length && !fresh) {
           let insightTxs = await dashsight.getTxs(addr, 1);
           let tx = insightTxs.txs[0];
           if (tx?.time) {
-            console.log(`[DEBUG] update ${index}: txs`);
+            //console.log(`[DEBUG] update ${index}: txs`);
             let txid = tx.txid;
             // TODO link utxos to txs
             info.txs.push([tx.time, txid]);
             // TODO second pass is to check utxos again
             info.utxos = await getMiniUtxos(addr);
           } else {
-            console.log(`[DEBUG] update ${index}: NO txs`);
+            //console.log(`[DEBUG] update ${index}: NO txs`);
           }
           info.checked_at = now;
         }
@@ -712,7 +707,6 @@
      * @returns {Promise<Array<MiniUtxo>>}
      */
     async function getMiniUtxos(addr) {
-      // TODO get addr info
       let insightUtxos = await dashsight.getUtxos(addr);
       let utxos = insightUtxos.map(function ({
         txid,
@@ -739,7 +733,12 @@
       safe.wallets = {};
     }
     if (!safe.wallets.main) {
-      safe.wallets.main = Wallet.generate("main", "Main", "full", 1);
+      safe.wallets.main = Wallet.generate({
+        name: "main",
+        label: "Main",
+        mode: "full",
+        priority: 1,
+      });
       await config.store.save();
     }
     config.main = safe.wallets.main;
@@ -748,21 +747,17 @@
   };
 
   /**
-   * @param {String} wallet - name of (HD) wallet
-   * @param {String} hdpath - hd derivation path (ex: "m/44'/5'/0'/0")
-   * @param {Number} index - hdkey path index
-   * @param {Boolean} spendable - true if we have the private key for this address
+   * @param {Object} opts
+   * @param {String} opts.wallet - name of (HD) wallet
+   * @param {String} opts.hdpath - derivation path, without index (ex: "m/44'/5'/0'/0")
+   * @param {Number} opts.index - xpub index or hdpath index
    * @returns {WalletAddress}
    */
-  Wallet.generateAddress = function (wallet, hdpath, index, spendable) {
-    // TODO `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}/${index}`
+  Wallet.generateAddress = function ({ wallet, hdpath, index }) {
     return {
       checked_at: 0,
-      hdpath,
-      //i: index,
+      hdpath: hdpath,
       index: index,
-      spendable, // moot if we have hdpath??
-      // TODO nest utxos in txs
       txs: [],
       utxos: [],
       wallet: wallet,
@@ -771,18 +766,18 @@
 
   /**
    * Generate a wallet with creation date set
-   * @param {String} name - all lower case
-   * @param {String} label - human friendly
-   * @param {WalletMode} mode - rx, tx, or full
-   * @param {Number} priority - sparse index, lowest is highest
-   * @param {String?} contact - handle of contact
+   * @param {Object} opts
+   * @param {String} opts.name - machine friendly (lower case, no spaces)
+   * @param {String} opts.label - human friendly
+   * @param {WalletMode} opts.mode - rx, tx, or full
+   * @param {Number} opts.priority - sparse index, lowest is highest
+   * @param {String?} [opts.contact] - handle of contact
    * @returns {PrivateWallet}
    */
-  Wallet.generate = function (name, label, mode, priority, contact = null) {
+  Wallet.generate = function ({ name, label, mode, priority, contact = null }) {
     let mnemonic = Bip39.generateMnemonic();
     if (!priority) {
-      // TODO maybe just increment from the last?
-      priority = Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
+      priority = Date.now();
     }
     //let mnemonic = await Passphrase.generate(128);
     return {
@@ -793,7 +788,7 @@
       mode: mode,
       priority: 0,
       mnemonic: mnemonic.split(/[,\s\n\|]+/g),
-      xpubkey: null,
+      xpub: null,
       created_at: new Date().toISOString(),
       archived_at: null,
     };
@@ -801,11 +796,12 @@
 
   /**
    * Generate a wallet with creation date set
-   * @param {String} handle
-   * @param {String} xpubkey
+   * @param {Object} opts
+   * @param {String} opts.handle
+   * @param {String} opts.xpub
    * @returns {PayWallet}
    */
-  Wallet.importXPub = function (handle, xpubkey) {
+  Wallet.generateXPubWallet = function ({ handle, xpub }) {
     let d = new Date();
     return {
       name: handle.toLowerCase(),
@@ -814,7 +810,7 @@
       contact: handle,
       mode: "tx",
       priority: d.valueOf(),
-      xpubkey: xpubkey,
+      xpub: xpub,
       created_at: d.toISOString(),
       archived_at: null,
     };
