@@ -129,25 +129,24 @@
 
   /**
    * @typedef PrivateWallet
-   * @prop {String} name
-   * @prop {String} label
-   * @prop {String?} device
-   * @prop {Number} priority
    * @prop {String?} contact
+   * @prop {String?} device
+   * @prop {String} label
    * @prop {Array<String>} mnemonic
-   * @prop {String?} xpub
+   * @prop {String} name
+   * @prop {Number} priority
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
    */
 
   /**
    * @typedef PayWallet
-   * @prop {String} name
-   * @prop {String} label
-   * @prop {Array<String>} [mnemonic] - empty array
-   * @prop {String?} device
-   * @prop {Number} priority
    * @prop {String?} contact
+   * @prop {String?} device
+   * @prop {String} label
+   * @prop {String} name
+   * @prop {Number} priority
+   * @prop {String} staticAddr - instead of xpub, e.g. for coinbase
    * @prop {String} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
