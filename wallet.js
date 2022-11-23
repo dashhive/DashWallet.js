@@ -166,54 +166,22 @@
     let wallet = {};
     let dashsight = config.dashsight;
 
+    // TODO rename addContact?
     /** @type Befriend */
     wallet.befriend = async function ({ handle, xpub }) {
       if (!handle) {
         throw new Error(`no 'handle' given`);
       }
 
-      let txXPub = xpub;
-
       let safe = config.safe;
 
       /** @type {PayWallet} */
       let txWallet;
-      if (txXPub) {
-        try {
-          HdKey.fromExtendedKey(xpub);
-        } catch (e) {
-          //@ts-ignore - tsc bug
-          if (!e.message.includes("Invalid checksum")) {
-            throw e;
-          }
-          throw new Error(
-            `failed to parse contact's xpub (bad checksum): '${xpub}'`,
-          );
-        }
-
-        txWallet = Object.values(safe.payWallets)
-          .sort(function (a, b) {
-            return (
-              new Date(b.created_at).valueOf() -
-              new Date(a.created_at).valueOf()
-            );
-          })
-          .find(function (wallet) {
-            return wallet.contact === handle && txXPub === wallet.xpub;
-          });
-        if (!txWallet) {
-          txWallet = Wallet.generateXPubWallet({
-            handle: handle,
-            xpub: txXPub,
-          });
-          for (let i = 1; ; i += 1) {
-            if (!safe.payWallets[`${handle}:${i}`]) {
-              safe.payWallets[`${handle}:${i}`] = txWallet;
-              break;
-            }
-          }
-          await config.store.save(safe.payWallets);
-        }
+      if (xpub) {
+        txWallet = _getPayWalletByXPub(handle, xpub);
+        // most recently added will sort first;
+        txWallet.priority = Date.now();
+        await config.store.save(safe.payWallets);
       } else {
         let txws = await wallet.findFriend({ handle });
         txWallet = txws[0];
@@ -226,15 +194,13 @@
         .filter(function (wallet) {
           return wallet.contact === handle;
         })
-        .sort(function (a, b) {
-          return a.priority - b.priority;
-        });
+        .sort(wallet._sort);
       if (!rxws.length) {
         // TODO use main wallet as seed
         rxWallet = Wallet.generate({
           name: handle,
           label: handle,
-          priority: 0,
+          priority: Date.now(),
           contact: handle,
         });
 
@@ -262,6 +228,44 @@
         privateRoot.derive(derivationPath).publicExtendedKey;
       return [publicParentExtendedKey, txWallet?.xpub];
     };
+
+    /**
+     * @param {String} handle - contact's handle
+     * @param {String} xpub - may also be payAddr
+     * @returns {PayWallet}
+     */
+    function _getPayWalletByXPub(handle, xpub) {
+      try {
+        HdKey.fromExtendedKey(xpub);
+      } catch (e) {
+        //@ts-ignore - tsc bug
+        if (!e.message.includes("Invalid checksum")) {
+          throw e;
+        }
+        throw new Error(
+          `failed to parse contact's xpub (bad checksum): '${xpub}'`,
+        );
+      }
+
+      let txWallet = Object.values(safe.payWallets)
+        .sort(wallet._sort)
+        .find(function (wallet) {
+          return wallet.contact === handle && xpub === wallet.xpub;
+        });
+      if (!txWallet) {
+        txWallet = Wallet.generateXPubWallet({
+          handle: handle,
+          xpub: xpub,
+        });
+        for (let i = 1; ; i += 1) {
+          if (!safe.payWallets[`${handle}:${i}`]) {
+            safe.payWallets[`${handle}:${i}`] = txWallet;
+            break;
+          }
+        }
+      }
+      return txWallet;
+    }
 
     /**
      * Show balances of addresses for which we have the private keys (WIF)
@@ -329,10 +333,16 @@
           // Pay-To
           return wallet.contact === handle;
         })
-        .sort(function (a, b) {
-          return a.priority - b.priority;
-        });
+        .sort(wallet._sort);
       return txws;
+    };
+
+    /**
+     * @param {PayWallet|PrivateWallet} a
+     * @param {PayWallet|PrivateWallet} b
+     */
+    wallet._sort = function (a, b) {
+      return b.priority - a.priority;
     };
 
     /** @type {FindChangeWallet } */
@@ -342,9 +352,7 @@
         .filter(function (wallet) {
           return wallet.contact === handle;
         })
-        .sort(function (a, b) {
-          return a.priority - b.priority;
-        });
+        .sort(wallet._sort);
       txws.push(safe.privateWallets.main);
       return txws;
     };
@@ -429,17 +437,20 @@
           throw new Error(`no pay-to wallet found for '${handle}'`);
         }
 
-        let now = Date.now();
-        let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub || "");
-        let nextIndex = await checkPayAddrs(payWallet, derivedRoot, "", now);
-        await config.store.save(safe.cache);
-        //@ts-ignore - tsc bug
-        let derivedChild = derivedRoot.deriveChild(nextIndex);
-        nextPayAddr = await b58c.encode({
-          version: DashApi.DashTypes.pubKeyHashVersion,
-          pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
-          compressed: true,
-        });
+        nextPayAddr = payWallet.staticAddr;
+        if (!nextPayAddr) {
+          let now = Date.now();
+          let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub || "");
+          let nextIndex = await checkPayAddrs(payWallet, derivedRoot, "", now);
+          await config.store.save(safe.cache);
+          //@ts-ignore - tsc bug
+          let derivedChild = derivedRoot.deriveChild(nextIndex);
+          nextPayAddr = await b58c.encode({
+            version: DashApi.DashTypes.pubKeyHashVersion,
+            pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
+            compressed: true,
+          });
+        }
       }
 
       let allUtxos = await wallet.utxos();
@@ -795,7 +806,7 @@
    * @param {Object} opts
    * @param {String} opts.name - machine friendly (lower case, no spaces)
    * @param {String} opts.label - human friendly
-   * @param {Number} opts.priority - sparse index, lowest is highest
+   * @param {Number} opts.priority - sparse index, higher is higher
    * @param {String?} [opts.contact] - handle of contact
    * @returns {PrivateWallet}
    */
