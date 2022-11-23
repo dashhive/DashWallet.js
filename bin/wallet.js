@@ -7,6 +7,10 @@ let pkg = require("../package.json");
 /**
  * @typedef {import('../').Config} Config
  * @typedef {import('../').Safe} Safe
+ * @typedef {import('../').Cache} Cache
+ * @typedef {import('../').PayWallet} PayWallet
+ * @typedef {import('../').Preferences} Preferences
+ * @typedef {import('../').PrivateWallet} PrivateWallet
  * @typedef {import('../').WalletInstance} WalletInstance
  */
 
@@ -34,13 +38,21 @@ let b58c = Base58Check.create({
 /**
  * @typedef FsStoreConfig
  * @prop {String} dir
- * @prop {String} path
+ * @prop {String} cachePath
+ * @prop {String} payWalletsPath
+ * @prop {String} preferencesPath
+ * @prop {String} privateWalletsPath
  */
 
 /** @type {FsStoreConfig} */
 let storeConfig = {
   dir: `${home}/.config/dash`,
-  path: "",
+
+  // paths
+  cachePath: "",
+  payWalletsPath: "",
+  preferencesPath: "",
+  privateWalletsPath: "",
 };
 
 /** @type {Config} */
@@ -67,7 +79,13 @@ async function main() {
       process.env.DASHSOCKET_BASE_URL || "https://insight.dash.org/socket.io",
   });
 
-  storeConfig.path = Path.join(storeConfig.dir, "private-keys.json");
+  storeConfig.cachePath = Path.join(storeConfig.dir, "cache.json");
+  storeConfig.payWalletsPath = Path.join(storeConfig.dir, "pay-wallets.json");
+  storeConfig.preferencesPath = Path.join(storeConfig.dir, "preferences.json");
+  storeConfig.privateWalletsPath = Path.join(
+    storeConfig.dir,
+    "private-wallets.json",
+  );
   config.store = Storage.create(storeConfig, config);
   // TODO
   //getWallets / getEachWallet
@@ -81,7 +99,6 @@ async function main() {
   config.safe = await config.store.init(storeConfig);
 
   let wallet = await Wallet.create(config);
-  await config.store.save();
 
   let version = removeFlag(args, ["version", "-V", "--version"]);
   if (version) {
@@ -280,30 +297,73 @@ let Storage = {}; //jshint ignore:line
  * @param {Config} config
  */
 Storage.create = function (storeConfig, config) {
-  /** @type {Safe} */
-  let safe;
-
   /**
+   * Fetches all the config and wallet data
    * @returns {Promise<Safe>}
    */
   async function init() {
-    await Fs.mkdir(storeConfig.dir, { recursive: true });
+    let cache = await _init(storeConfig.cachePath);
+    let payWallets = await _init(storeConfig.payWalletsPath);
+    let preferences = await _init(storeConfig.preferencesPath);
+    let privateWallets = await _init(storeConfig.privateWalletsPath);
 
-    let fh = await Fs.open(storeConfig.path, "a");
-    await fh.close();
-
-    let text = await Fs.readFile(storeConfig.path, "utf8");
-    /** @type {Safe} */
-    safe = JSON.parse(text || "{}");
-
-    return safe;
+    return {
+      cache,
+      payWallets,
+      preferences,
+      privateWallets,
+    };
   }
 
   /**
-   * Safely save the safe
+   * Fetches all data from the file
+   * @param {String} path
    */
-  async function save() {
-    await safeReplace(storeConfig.path, JSON.stringify(safe, null, 2), "utf8");
+  async function _init(path) {
+    await Fs.mkdir(storeConfig.dir, { recursive: true });
+
+    let fh = await Fs.open(path, "a");
+    await fh.close();
+
+    let text = await Fs.readFile(path, "utf8");
+    let data = JSON.parse(text || "{}");
+    /*
+    data._path = function () {
+      return path;
+    };
+    */
+    // TODO find a better way to do this
+    Object.defineProperty(data, "_path", {
+      enumerable: false,
+      value: function () {
+        return path;
+      },
+    });
+
+    return data;
+  }
+
+  /**
+   * @typedef {Object<String, PayWallet>} DPayWallets
+   * @typedef {Object<String, PrivateWallet>} DPrivateWallets
+   */
+
+  /**
+   * Safely save the safe
+   * TODO - encrypt private wallets
+   * @param {Cache|DPayWallets|DPrivateWallets|Preferences} data
+   * @returns {Promise<void>}
+   */
+  async function save(data) {
+    if ("function" !== typeof data?._path) {
+      let t = typeof data;
+      let keys = Object.keys(data || {});
+      throw new Error(
+        `[Sanity Fail] no '_path' on 'data' (${t}: ${keys}) (probably a developer error)`,
+      );
+    }
+    let path = data._path();
+    await safeReplace(path, JSON.stringify(data, null, 2), "utf8");
   }
 
   return {

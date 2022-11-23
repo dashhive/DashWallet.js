@@ -60,7 +60,13 @@
 
   /**
    * @typedef Store
-   * @prop {Function} save
+   * @prop {StoreSave} save
+   *
+   * @callback StoreSave
+   * @param { Cache|
+   *    Object.<String,PayWallet>|
+   *    Preferences|
+   *    Object.<String,PrivateWallet> } data
    */
 
   /**
@@ -109,20 +115,22 @@
 
   /**
    * @typedef Safe
-   * @prop {Object<String, Wallet>} wallets
+   * @prop {Object<String, PrivateWallet>} privateWallets
+   * @prop {Object<String, PayWallet>} payWallets
+   * @prop {Preferences} preferences
+   * @prop {Cache} cache
+   *
+   * @typedef {Object.<String, unknown>} Preferences
+   *
+   * TODO txs and wifs?
+   * @typedef Cache
    * @prop {Object<String, Wallet>} addresses
-   */
-
-  /**
-   * Mode is one of "rx" Receive, "tx" Send, or "full" for both
-   * @typedef {"tx" | "rx" | "full"} WalletMode
    */
 
   /**
    * @typedef PrivateWallet
    * @prop {String} name
    * @prop {String} label
-   * @prop {WalletMode} mode
    * @prop {String?} device
    * @prop {Number} priority
    * @prop {String?} contact
@@ -137,7 +145,6 @@
    * @prop {String} name
    * @prop {String} label
    * @prop {Array<String>} [mnemonic] - empty array
-   * @prop {WalletMode} mode
    * @prop {String?} device
    * @prop {Number} priority
    * @prop {String?} contact
@@ -184,7 +191,7 @@
           );
         }
 
-        txWallet = Object.values(safe.wallets)
+        txWallet = Object.values(safe.payWallets)
           .sort(function (a, b) {
             return (
               new Date(b.created_at).valueOf() -
@@ -192,11 +199,7 @@
             );
           })
           .find(function (wallet) {
-            return (
-              wallet.contact === handle &&
-              txXPub === wallet.xpub &&
-              ["tx"].includes(wallet.mode)
-            );
+            return wallet.contact === handle && txXPub === wallet.xpub;
           });
         if (!txWallet) {
           txWallet = Wallet.generateXPubWallet({
@@ -204,29 +207,24 @@
             xpub: txXPub,
           });
           for (let i = 1; ; i += 1) {
-            if (!safe.wallets[`${handle}:${i}`]) {
-              safe.wallets[`${handle}:${i}`] = txWallet;
+            if (!safe.payWallets[`${handle}:${i}`]) {
+              safe.payWallets[`${handle}:${i}`] = txWallet;
               break;
             }
           }
-          await config.store.save();
+          await config.store.save(safe.payWallets);
         }
       } else {
         let txws = await wallet.findFriend({ handle });
         txWallet = txws[0];
       }
 
-      /*
-      safe.wallets.main = generateWallet("main", "Main", "full");
-      await safeReplace(confPath, JSON.stringify(safe, null, 2), "utf8");
-      */
-
       /** @type {PrivateWallet} */
       let rxWallet;
       /** @type {Array<PrivateWallet>} */
-      let rxws = Object.values(safe.wallets)
+      let rxws = Object.values(safe.privateWallets)
         .filter(function (wallet) {
-          return wallet.contact === handle && "rx" === wallet.mode;
+          return wallet.contact === handle;
         })
         .sort(function (a, b) {
           return a.priority - b.priority;
@@ -236,18 +234,17 @@
         rxWallet = Wallet.generate({
           name: handle,
           label: handle,
-          mode: "rx",
           priority: 0,
           contact: handle,
         });
 
         for (let i = 1; ; i += 1) {
-          if (!safe.wallets[`${handle}:${i}`]) {
-            safe.wallets[`${handle}:${i}`] = rxWallet;
+          if (!safe.privateWallets[`${handle}:${i}`]) {
+            safe.privateWallets[`${handle}:${i}`] = rxWallet;
             break;
           }
         }
-        await config.store.save();
+        await config.store.save(safe.privateWallets);
 
         rxws.push(rxWallet);
       }
@@ -275,7 +272,7 @@
       /** @type {Object.<String, Number>} */
       let balances = {};
 
-      Object.values(safe.addresses).forEach(function (addr) {
+      Object.values(safe.cache.addresses).forEach(function (addr) {
         if (!addr.hdpath) {
           return;
         }
@@ -307,8 +304,8 @@
       /** @type {Array<Required<MiniUtxo>>} */
       let utxos = [];
 
-      Object.keys(safe.addresses).forEach(function (addr) {
-        let addrInfo = safe.addresses[addr];
+      Object.keys(safe.cache.addresses).forEach(function (addr) {
+        let addrInfo = safe.cache.addresses[addr];
         if (!addrInfo.hdpath) {
           return;
         }
@@ -327,10 +324,10 @@
     /** @type {FindFriendWallet} */
     wallet.findFriend = async function ({ handle }) {
       // TODO filter out archived wallets?
-      let txws = Object.values(safe.wallets)
+      let txws = Object.values(safe.payWallets)
         .filter(function (wallet) {
           // Pay-To
-          return wallet.contact === handle && ["tx"].includes(wallet.mode);
+          return wallet.contact === handle;
         })
         .sort(function (a, b) {
           return a.priority - b.priority;
@@ -341,16 +338,14 @@
     /** @type {FindChangeWallet } */
     wallet.findChangeWallet = async function ({ handle }) {
       // TODO filter out archived wallets?
-      let txws = Object.values(safe.wallets)
+      let txws = Object.values(safe.privateWallets)
         .filter(function (wallet) {
-          return (
-            wallet.contact === handle && ["rx", "full"].includes(wallet.mode)
-          );
+          return wallet.contact === handle;
         })
         .sort(function (a, b) {
           return a.priority - b.priority;
         });
-      txws.push(safe.wallets.main);
+      txws.push(safe.privateWallets.main);
       return txws;
     };
 
@@ -437,6 +432,7 @@
         let now = Date.now();
         let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub || "");
         let nextIndex = await checkPayAddrs(payWallet, derivedRoot, "", now);
+        await config.store.save(safe.cache);
         //@ts-ignore - tsc bug
         let derivedChild = derivedRoot.deriveChild(nextIndex);
         nextPayAddr = await b58c.encode({
@@ -486,6 +482,7 @@
       tmpTx.to(nextPayAddr, amount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
       let changeAddr = await wallet.nextChangeAddr({ handle });
+      await config.store.save(safe.cache);
       tmpTx.change(changeAddr);
       tmpTx.sign(wifs);
 
@@ -538,16 +535,13 @@
      * @returns {Promise<String>} - wif (private key)
      */
     wallet._toWif = async function (addr) {
-      let addrInfo = safe.addresses[addr];
+      let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         throw new Error(`cannot find address info for '${addr}'`);
       }
 
-      let w = Object.values(safe.wallets).find(function (wallet) {
-        return (
-          wallet.name === addrInfo.wallet &&
-          ["rx", "full"].includes(wallet.mode)
-        );
+      let w = Object.values(safe.privateWallets).find(function (wallet) {
+        return wallet.name === addrInfo.wallet;
       });
       if (!w) {
         throw new Error(`cannot find wallet for '${addr}'`);
@@ -588,8 +582,10 @@
     // 4. For anything that has a balance, check again
     /**@type {Sync} */
     wallet.sync = async function ({ now, staletime = 60 * 1000 }) {
-      // full and rx wallets
-      await Object.values(safe.wallets).reduce(async function (promise, w) {
+      await Object.values(safe.privateWallets).reduce(async function (
+        promise,
+        w,
+      ) {
         await promise;
 
         let derivedRoot;
@@ -597,31 +593,33 @@
         if (xpub) {
           derivedRoot = HdKey.fromExtendedKey(xpub);
           await checkPayAddrs(w, derivedRoot, "", now, staletime);
-        } else {
-          let mnemonic = w.mnemonic.join(" ");
-          // TODO use derivation from main for non-imported wallets
-          let seed = await Bip39.mnemonicToSeed(mnemonic);
-          let privateRoot = HdKey.fromMasterSeed(seed);
-          // The full path looks like `m/44'/5'/0'/0/0`
-          // We "harden" the prefix `m/44'/5'/0'/0`
-          let account = 0;
-
-          // rx addresses
-          let direction = 0;
-          let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-          derivedRoot = privateRoot.derive(derivationPath);
-          await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
-
-          // change addresses
-          direction = 1;
-          derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-          derivedRoot = privateRoot.derive(derivationPath);
-          await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
+          return;
         }
 
-        // TODO optimize later
-        await config.store.save();
-      }, Promise.resolve());
+        let mnemonic = w.mnemonic.join(" ");
+        // TODO use derivation from main for non-imported wallets
+        let seed = await Bip39.mnemonicToSeed(mnemonic);
+        let privateRoot = HdKey.fromMasterSeed(seed);
+        // The full path looks like `m/44'/5'/0'/0/0`
+        // We "harden" the prefix `m/44'/5'/0'/0`
+        let account = 0;
+
+        // rx addresses
+        let direction = 0;
+        let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+        derivedRoot = privateRoot.derive(derivationPath);
+        await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
+
+        // change addresses
+        direction = 1;
+        derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+        derivedRoot = privateRoot.derive(derivationPath);
+        await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
+
+        await config.store.save(safe.privateWallets);
+      },
+      Promise.resolve());
+      await config.store.save(safe.cache);
     };
 
     /**
@@ -652,7 +650,7 @@
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });
-        let info = safe.addresses[addr];
+        let info = safe.cache.addresses[addr];
         if (info?.txs.length) {
           //console.log("[DEBUG] [used]", index);
           recentlyUsedIndex = index;
@@ -680,14 +678,14 @@
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });
-        let info = safe.addresses[addr];
+        let info = safe.cache.addresses[addr];
         if (!info) {
           info = Wallet.generateAddress({
             wallet: w.name,
             hdpath: hdpath,
             index: index,
           });
-          safe.addresses[addr] = info;
+          safe.cache.addresses[addr] = info;
         }
 
         let fresh = now - info.checked_at < staletime;
@@ -746,22 +744,30 @@
       return utxos;
     }
 
-    if (!safe.addresses) {
-      safe.addresses = {};
+    if (!safe.cache) {
+      safe.cache = { addresses: {} };
     }
-    if (!safe.wallets) {
-      safe.wallets = {};
+    if (!safe.cache.addresses) {
+      safe.cache.addresses = {};
     }
-    if (!safe.wallets.main) {
-      safe.wallets.main = Wallet.generate({
+    if (!safe.payWallets) {
+      safe.payWallets = {};
+    }
+    if (!safe.preferences) {
+      safe.preferences = {};
+    }
+    if (!safe.privateWallets) {
+      safe.privateWallets = {};
+    }
+    if (!safe.privateWallets.main) {
+      safe.privateWallets.main = Wallet.generate({
         name: "main",
         label: "Main",
-        mode: "full",
         priority: 1,
       });
-      await config.store.save();
+      await config.store.save(safe.privateWallets);
     }
-    config.main = safe.wallets.main;
+    config.main = safe.privateWallets.main;
 
     return wallet;
   };
@@ -789,12 +795,11 @@
    * @param {Object} opts
    * @param {String} opts.name - machine friendly (lower case, no spaces)
    * @param {String} opts.label - human friendly
-   * @param {WalletMode} opts.mode - rx, tx, or full
    * @param {Number} opts.priority - sparse index, lowest is highest
    * @param {String?} [opts.contact] - handle of contact
    * @returns {PrivateWallet}
    */
-  Wallet.generate = function ({ name, label, mode, priority, contact = null }) {
+  Wallet.generate = function ({ name, label, priority, contact = null }) {
     let mnemonic = Bip39.generateMnemonic();
     if (!priority) {
       priority = Date.now();
@@ -805,7 +810,6 @@
       label: label,
       device: null,
       contact: contact,
-      mode: mode,
       priority: 0,
       mnemonic: mnemonic.split(/[,\s\n\|]+/g),
       xpub: null,
@@ -828,7 +832,6 @@
       label: handle,
       device: null,
       contact: handle,
-      mode: "tx",
       priority: d.valueOf(),
       xpub: xpub,
       created_at: d.toISOString(),

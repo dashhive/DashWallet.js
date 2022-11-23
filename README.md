@@ -66,7 +66,6 @@ Generates a complete `PrivateWallet` object.
 Wallet.generate({
   name: "main",
   label: "Main",
-  mode: "full", // tx, rx, or full
   priority: 1, // lower sorts higher
 });
 ```
@@ -77,7 +76,6 @@ Wallet.generate({
   "label": "Main",
   "device": null,
   "contact": null,
-  "mode": "full",
   "priority": 1,
   "mnemonic": ["twelve", "words"],
   "xpub": null,
@@ -119,7 +117,6 @@ Generates a complete `PayWallet` object.
   "label": "@johndoe",
   "device": null,
   "contact": "@johndoe",
-  "mode": "rx",
   "priority": 1668919000655,
   "xpub": "xpubXXXX...XXXX",
   "created_at": "2022-02-22T22:02:22.000Z",
