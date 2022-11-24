@@ -72,13 +72,13 @@
 
     /**
      * Full Send!
-     * @param {String} privKey - wif
-     * @param {String} pub - addr
+     * TODO allow multiple wifs
+     * @param {String} wif - private key
+     * @param {String} pub - pay addr
      */
-    dashApi.createBalanceTransfer = async function (privKey, pub) {
-      let pk = privKey;
-      //let pk = new Dashcore.PrivateKey(privKey);
-      let changeAddr = await Dash.wifToAddr(privKey);
+    dashApi.createBalanceTransfer = async function (wif, pub) {
+      // this is required by the sdk, but won't be used
+      let changeAddr = await Dash.wifToAddr(wif);
 
       let insightUtxos = await insightApi.getUtxos(changeAddr);
       let utxos = await Dash.getUtxos(insightUtxos);
@@ -91,7 +91,7 @@
         //@ts-ignore - allows single value or array
         .from(utxos);
       tmpTx.to(pub, balance - 1000);
-      tmpTx.sign(pk);
+      tmpTx.sign(wif);
 
       // TODO getsmartfeeestimate??
       // fee = 1duff/byte (2 chars hex is 1 byte)
@@ -104,26 +104,20 @@
         .from(utxos);
       tx.to(pub, balance - fee);
       tx.fee(fee);
-      tx.sign(pk);
+      tx.sign(wif);
 
       return tx;
     };
 
     /**
      * Send with change back
-     * @param {String} privKey - wif
+     * @param {String} wif - private key
      * @param {String|CoreAddress} payAddr
      * @param {Number} amount
      * @param {String|CoreAddress} [changeAddr]
      */
-    dashApi.createPayment = async function (
-      privKey,
-      payAddr,
-      amount,
-      changeAddr,
-    ) {
-      let pk = new Dashcore.PrivateKey(privKey);
-      let utxoAddr = await Dash.wifToAddr(privKey);
+    dashApi.createPayment = async function (wif, payAddr, amount, changeAddr) {
+      let utxoAddr = await Dash.wifToAddr(wif);
       if (!changeAddr) {
         changeAddr = utxoAddr;
       }
@@ -154,7 +148,7 @@
       tmpTx.to(payAddr, amount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
       tmpTx.change(changeAddr);
-      tmpTx.sign(pk);
+      tmpTx.sign(wif);
 
       // TODO getsmartfeeestimate??
       // fee = 1duff/byte (2 chars hex is 1 byte)
@@ -175,7 +169,7 @@
       tx.fee(fee);
       //@ts-ignore - see above
       tx.change(changeAddr);
-      tx.sign(pk);
+      tx.sign(wif);
 
       return tx;
     };
@@ -292,7 +286,7 @@
   };
 
   /**
-   * @param {String} wif
+   * @param {String} wif - private key
    * @returns {Promise<String>}
    */
   Dash.wifToAddr = async function (wif) {
