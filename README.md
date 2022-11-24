@@ -14,7 +14,7 @@ Sent Đ1.0 to @johndoe!
 
 ```txt
 Usage:
-    wallet friend <handle> [xpub]
+    wallet friend <handle> [xpub-or-addr]
     wallet pay <handle|pay-addr> <DASH> [--dry-run]
     wallet balances
     wallet sync
@@ -26,7 +26,7 @@ Global Options:
 ## Examples
 
 ```sh
-wallet friend <handle> [xpubkey]
+wallet friend <handle> [xpub-or-addr]
 ```
 
 ```txt
@@ -78,7 +78,6 @@ Wallet.generate({
   "contact": null,
   "priority": 1,
   "mnemonic": ["twelve", "words"],
-  "xpub": null,
   "created_at": "2022-02-22T22:02:22.000Z",
   "archived_at": null
 }
@@ -107,7 +106,7 @@ Wallet.generateAddress({
 }
 ```
 
-# Wallet.generateXPubWallet(walletInfo)
+# Wallet.generatePayWallet(walletInfo)
 
 Generates a complete `PayWallet` object.
 
@@ -119,6 +118,7 @@ Generates a complete `PayWallet` object.
   "contact": "@johndoe",
   "priority": 1668919000655,
   "xpub": "xpubXXXX...XXXX",
+  "addr": "Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "created_at": "2022-02-22T22:02:22.000Z",
   "archived_at": null
 }
@@ -149,13 +149,14 @@ any.
 ```js
 await wallet.befriend({
   handle: "@johndoe",
-  // optional
+  // optional (either or, not both)
   xpub: "<the-xpub-that-john-doe-gave-to-you>",
+  addr: "<a-static-pay-addr-from-john-doe>",
 });
 ```
 
 ```json
-["<xpub-YOU-should-give-to-john>", "xpub-JOHN-gave-to-you"]
+["<xpub-YOU-should-give-to-john>", "xpub-JOHN-gave-to-you", "addr-from-JOHN"]
 ```
 
 # wallet.createTx(txOpts)

@@ -25,15 +25,8 @@ let Fs = require("node:fs/promises");
 
 let Wallet = require("../wallet.js");
 
-let Base58Check = require("@root/base58check").Base58Check;
 let Dashsight = require("dashsight");
 // let Qr = require("./qr.js");
-
-let HdKey = require("hdkey");
-let b58c = Base58Check.create({
-  pubKeyHashVersion: Wallet.DashTypes.pubKeyHashVersion,
-  privateKeyVersion: Wallet.DashTypes.privateKeyVersion,
-});
 
 /**
  * @typedef FsStoreConfig
@@ -150,7 +143,7 @@ function usage() {
   console.info();
   console.info(`Usage:`);
   console.info(`    wallet balances`);
-  console.info(`    wallet friend <handle> [xpub]`);
+  console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
   console.info(`    wallet sync`);
   console.info(`    wallet version`);
@@ -166,32 +159,47 @@ function usage() {
  * @param {Array<String>} args
  */
 async function befriend(config, wallet, args) {
-  let [handle, xpub] = args;
+  let [handle, xpubOrAddr] = args;
   if (!handle) {
-    throw Error(`Usage: wallet friend <handle> [xpub]`);
+    throw Error(`Usage: wallet friend <handle> [xpub-or-static-addr]`);
   }
 
-  let [rxXPub, txXPub] = await wallet.befriend({ handle, xpub });
-  if (txXPub) {
-    let derivedRoot = HdKey.fromExtendedKey(txXPub);
-    // TODO print out first **unused** address
-    let userIndex = 0;
-    //@ts-ignore
-    let derivedChild = derivedRoot.deriveChild(userIndex);
-    let addrFromXPubKey = await b58c.encode({
-      version: Wallet.DashTypes.pubKeyHashVersion,
-      pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
-      compressed: true,
-    });
+  let xpub = "";
+  let addr = "";
+  if (Wallet.isXPub(xpubOrAddr)) {
+    xpub = xpubOrAddr;
+  } else {
+    addr = xpubOrAddr;
+  }
+
+  let [rxXPub, txWallet] = await wallet.befriend({
+    handle,
+    xpub,
+    addr,
+  });
+
+  let txAddr = {
+    addr: txWallet?.addr || "",
+    index: 0,
+  };
+  if (txWallet?.xpub) {
+    txAddr = await wallet.createNextPayAddr({ handle });
+  }
+  if (txAddr.addr) {
+    let addrIndex = `#${txAddr.index}`;
+    if (txWallet?.addr) {
+      addrIndex = `multi-use`;
+    }
+
     console.info();
-    console.info(`Send DASH to '${handle}' at this address:`);
+    console.info(`Send DASH to '${handle}' at this address (${addrIndex}):`);
     // TODO QR
-    console.info(addrFromXPubKey);
+    console.info(`${txAddr.addr}`);
   }
 
   console.info();
   console.info(`Share this "dropbox" wallet (xpub) with '${handle}':`);
-  // TODO QR
+  // TODO QR and next addr
   console.info(rxXPub);
 }
 
@@ -206,7 +214,7 @@ async function pay(config, wallet, args) {
   let [handle, DASH] = args;
   if (!handle) {
     throw Error(
-      `Usage: wallet send <handle> <DASH>\nExample: wallet send @joey 1.0`,
+      `Usage: wallet pay <handle-or-addr> <DASH>\nExample: wallet send @joey 1.0`,
     );
   }
 

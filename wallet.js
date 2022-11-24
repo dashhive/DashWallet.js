@@ -85,20 +85,20 @@
    */
 
   /**
-   * // TODO doc: send-only (to you) xpub key to share with friend
-   * Add and/or generate a friend's xpub key
+   * Add or generate and return (mutual) xpub key(s) for a contact
    * @callback Befriend
    * @param {BefriendOpts} opts
-   * @returns {Promise<[String, String]>} - rxXPub & txXPub
+   * @returns {Promise<[String, PayWallet]>} - rxXPub, txXPub, txStaticAddr
    *
    * @typedef BefriendOpts
    * @prop {String} handle
    * @prop {String} xpub - receive-only xpub key from friend
+   * @prop {String} addr - reusable address, e.g. for Coinbase
    */
 
   /**
    * Find a friend's xpub key
-   * @callback FindFriendWallet
+   * @callback FindPayWallets
    * @param {FindFriendOpts} opts
    * @returns {Array<PayWallet>} - wallets matching this friend
    *
@@ -107,8 +107,8 @@
    */
 
   /**
-   * Find a change wallet
-   * @callback FindChangeWallet
+   * Find a private wallet by handle
+   * @callback FindPrivateWallets
    * @param {FindFriendOpts} opts
    * @returns {Array<PrivateWallet>} - wallets matching this friend
    */
@@ -146,7 +146,7 @@
    * @prop {String} label
    * @prop {String} name
    * @prop {Number} priority
-   * @prop {String} staticAddr - instead of xpub, e.g. for coinbase
+   * @prop {String} addr - instead of xpub, e.g. for coinbase
    * @prop {String} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
@@ -165,9 +165,9 @@
     let wallet = {};
     let dashsight = config.dashsight;
 
-    // TODO rename addContact?
+    // TODO rename addContactByXPub, addContactByAddr?
     /** @type Befriend */
-    wallet.befriend = async function ({ handle, xpub }) {
+    wallet.befriend = async function ({ handle, xpub, addr }) {
       if (!handle) {
         throw new Error(`no 'handle' given`);
       }
@@ -176,13 +176,14 @@
 
       /** @type {PayWallet} */
       let txWallet;
-      if (xpub) {
-        txWallet = _getPayWalletByXPub(handle, xpub);
+      let hasAddr = xpub || addr;
+      if (hasAddr) {
+        txWallet = _getPayWallet(handle, xpub, addr);
         // most recently added will sort first;
         txWallet.priority = Date.now();
         await config.store.save(safe.payWallets);
       } else {
-        let txws = await wallet.findFriend({ handle });
+        let txws = await wallet.findPayWallets({ handle });
         txWallet = txws[0];
       }
 
@@ -225,36 +226,42 @@
       let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
       let publicParentExtendedKey =
         privateRoot.derive(derivationPath).publicExtendedKey;
-      return [publicParentExtendedKey, txWallet?.xpub];
+      return [publicParentExtendedKey, txWallet];
     };
 
     /**
      * @param {String} handle - contact's handle
-     * @param {String} xpub - may also be payAddr
+     * @param {String} xpub
+     * @param {String} addr
      * @returns {PayWallet}
      */
-    function _getPayWalletByXPub(handle, xpub) {
-      try {
-        HdKey.fromExtendedKey(xpub);
-      } catch (e) {
-        //@ts-ignore - tsc bug
-        if (!e.message.includes("Invalid checksum")) {
-          throw e;
-        }
-        throw new Error(
-          `failed to parse contact's xpub (bad checksum): '${xpub}'`,
-        );
+    function _getPayWallet(handle, xpub, addr) {
+      if (xpub) {
+        Wallet.assertXPub(xpub);
       }
 
       let txWallet = Object.values(safe.payWallets)
         .sort(wallet._sort)
         .find(function (wallet) {
-          return wallet.contact === handle && xpub === wallet.xpub;
+          if (wallet.contact !== handle) {
+            return false;
+          }
+
+          if (xpub.length > 0) {
+            return xpub === wallet.xpub;
+          }
+
+          if (addr.length > 0) {
+            return addr === wallet.addr;
+          }
+
+          return false;
         });
       if (!txWallet) {
-        txWallet = Wallet.generateXPubWallet({
+        txWallet = Wallet.generatePayWallet({
           handle: handle,
           xpub: xpub,
+          addr: addr,
         });
         for (let i = 1; ; i += 1) {
           if (!safe.payWallets[`${handle}:${i}`]) {
@@ -324,12 +331,11 @@
       return utxos;
     };
 
-    /** @type {FindFriendWallet} */
-    wallet.findFriend = async function ({ handle }) {
+    /** @type {FindPayWallets} */
+    wallet.findPayWallets = async function ({ handle }) {
       // TODO filter out archived wallets?
       let txws = Object.values(safe.payWallets)
         .filter(function (wallet) {
-          // Pay-To
           return wallet.contact === handle;
         })
         .sort(wallet._sort);
@@ -344,49 +350,81 @@
       return b.priority - a.priority;
     };
 
-    /** @type {FindChangeWallet } */
-    wallet.findChangeWallet = async function ({ handle }) {
+    /** @type {FindPrivateWallets } */
+    wallet.findPrivateWallets = async function ({ handle }) {
       // TODO filter out archived wallets?
       let txws = Object.values(safe.privateWallets)
         .filter(function (wallet) {
           return wallet.contact === handle;
         })
         .sort(wallet._sort);
-      txws.push(safe.privateWallets.main);
       return txws;
     };
 
     /**
      * @param {Object} opts
-     * @param {String} opts.handle - a wallet name
+     * @param {String} opts.handle - a private wallet name
+     * @param {Number} opts.direction - 0 for deposit, 1 for change
      * @returns {Promise<String>} - pay address
      */
-    wallet.nextChangeAddr = async function ({ handle }) {
-      let ws = await wallet.findChangeWallet({ handle });
-      let w = ws[0];
-      let account = 0; // main
-      let direction = 1; // change
-      return await wallet._getNextAddr(w, account, direction);
-    };
+    wallet._nextWalletAddr = async function ({ handle, direction }) {
+      let ws = await wallet.findPrivateWallets({ handle });
+      let w = ws[0] || safe.privateWallets.main;
 
-    /**
-     * @param {PrivateWallet} w
-     * @param {Number} account - 0 for main / primary
-     * @param {Number} direction - 0 for deposit, 1 for change
-     * TODO give this the correct name
-     */
-    wallet._getNextAddr = async function (w, account, direction) {
       let mnemonic = w.mnemonic.join(" ");
       let seed = await Bip39.mnemonicToSeed(mnemonic);
       let privateRoot = HdKey.fromMasterSeed(seed);
 
-      let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-      let derivedRoot = privateRoot.derive(derivationPath);
+      let account = 0; // main
+      let hdpath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+
+      let derivedRoot = privateRoot.derive(hdpath);
 
       let now = Date.now();
-      let nextIndex = await checkPayAddrs(w, derivedRoot, derivationPath, now);
+      let nextIndex = await indexPayAddrs(w.name, derivedRoot, hdpath, now);
+      await config.store.save(safe.cache);
+
+      return await wallet._getAddr({ derivedRoot, index: nextIndex });
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     */
+    wallet.createNextPayAddr = async function ({ handle }) {
+      let ws = await wallet.findPayWallets({ handle });
+      let payWallet = ws[0];
+
+      if (payWallet.addr) {
+        return {
+          addr: payWallet.addr,
+          index: null,
+        };
+      }
+
+      let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub);
+
+      let now = Date.now();
+      let nextIndex = await indexPayAddrs(payWallet.name, derivedRoot, "", now);
+      await config.store.save(safe.cache);
+
+      let addr = await wallet._getAddr({ derivedRoot, index: nextIndex });
+      return {
+        addr,
+        index: nextIndex,
+      };
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {import('hdkey')} opts.derivedRoot
+     * @param {Number} opts.index
+     * @returns {Promise<String>} - next pay addr
+     */
+    wallet._getAddr = async function ({ derivedRoot, index }) {
       //@ts-ignore - tsc bug
-      let derivedChild = derivedRoot.deriveChild(nextIndex);
+      let derivedChild = derivedRoot.deriveChild(index);
+
       let nextPayAddr = await b58c.encode({
         version: DashApi.DashTypes.pubKeyHashVersion,
         pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
@@ -423,25 +461,30 @@
      */
     wallet.createTx = async function ({ handle, amount }) {
       let nextPayAddr = "";
-      if (34 === handle.length) {
-        if (["X", "Y"].includes(handle[0])) {
-          nextPayAddr = handle;
-        }
+      let isPayAddr = _isPayAddr(handle);
+      if (isPayAddr) {
+        nextPayAddr = handle;
       }
 
       {
-        let payWallets = await wallet.findFriend({ handle });
+        let payWallets = await wallet.findPayWallets({ handle });
         let payWallet = payWallets[0];
         if (!payWallet) {
           throw new Error(`no pay-to wallet found for '${handle}'`);
         }
 
-        nextPayAddr = payWallet.staticAddr;
+        nextPayAddr = payWallet.addr;
         if (!nextPayAddr) {
           let now = Date.now();
-          let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub || "");
-          let nextIndex = await checkPayAddrs(payWallet, derivedRoot, "", now);
+          let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub);
+          let nextIndex = await indexPayAddrs(
+            payWallet.name,
+            derivedRoot,
+            "",
+            now,
+          );
           await config.store.save(safe.cache);
+
           //@ts-ignore - tsc bug
           let derivedChild = derivedRoot.deriveChild(nextIndex);
           nextPayAddr = await b58c.encode({
@@ -491,7 +534,7 @@
         .from(utxos);
       tmpTx.to(nextPayAddr, amount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
-      let changeAddr = await wallet.nextChangeAddr({ handle });
+      let changeAddr = await wallet._nextWalletAddr({ handle, direction: 1 });
       await config.store.save(safe.cache);
       tmpTx.change(changeAddr);
       tmpTx.sign(wifs);
@@ -520,6 +563,22 @@
       let txHex = tx.serialize();
       return txHex;
     };
+
+    /**
+     * @param {String} addr
+     * @returns {Boolean}
+     */
+    function _isPayAddr(addr) {
+      if (34 !== addr?.length) {
+        return false;
+      }
+
+      if (!["X", "Y"].includes(addr[0])) {
+        return false;
+      }
+
+      return true;
+    }
 
     /**
      * @param {Array<CoreUtxo>} utxos
@@ -599,12 +658,6 @@
         await promise;
 
         let derivedRoot;
-        let xpub = w.xpub;
-        if (xpub) {
-          derivedRoot = HdKey.fromExtendedKey(xpub);
-          await checkPayAddrs(w, derivedRoot, "", now, staletime);
-          return;
-        }
 
         let mnemonic = w.mnemonic.join(" ");
         // TODO use derivation from main for non-imported wallets
@@ -616,32 +669,34 @@
 
         // rx addresses
         let direction = 0;
-        let derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-        derivedRoot = privateRoot.derive(derivationPath);
-        await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
+        let hdpath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+        derivedRoot = privateRoot.derive(hdpath);
+        await indexPayAddrs(w.name, derivedRoot, hdpath, now, staletime);
 
         // change addresses
         direction = 1;
-        derivationPath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
-        derivedRoot = privateRoot.derive(derivationPath);
-        await checkPayAddrs(w, derivedRoot, derivationPath, now, staletime);
+        hdpath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
+        derivedRoot = privateRoot.derive(hdpath);
+        await indexPayAddrs(w.name, derivedRoot, hdpath, now, staletime);
 
         await config.store.save(safe.privateWallets);
       },
       Promise.resolve());
+
       await config.store.save(safe.cache);
     };
 
     /**
-     * @param {PayWallet|PrivateWallet} w
+     * TODO - rename because this updates the cache, not just 'check'
+     * @param {String} walletName
      * @param {import('hdkey')} derivedRoot - TODO
      * @param {String} hdpath - derivation path
      * @param {Number} now
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<Number>} - the next, possibly sparse, unused address index
      */
-    async function checkPayAddrs(
-      w,
+    async function indexPayAddrs(
+      walletName,
       derivedRoot,
       hdpath,
       now,
@@ -691,7 +746,7 @@
         let info = safe.cache.addresses[addr];
         if (!info) {
           info = Wallet.generateAddress({
-            wallet: w.name,
+            wallet: walletName,
             hdpath: hdpath,
             index: index,
           });
@@ -727,6 +782,7 @@
           }
         }
       }
+
       return recentlyUsedIndex + 1;
     }
 
@@ -786,7 +842,7 @@
    * @param {Object} opts
    * @param {String} opts.wallet - name of (HD) wallet
    * @param {String} opts.hdpath - derivation path, without index (ex: "m/44'/5'/0'/0")
-   * @param {Number} opts.index - xpub index or hdpath index
+   * @param {Number} opts.index - xpub or hdpath index
    * @returns {WalletAddress}
    */
   Wallet.generateAddress = function ({ wallet, hdpath, index }) {
@@ -822,7 +878,6 @@
       contact: contact,
       priority: 0,
       mnemonic: mnemonic.split(/[,\s\n\|]+/g),
-      xpub: null,
       created_at: new Date().toISOString(),
       archived_at: null,
     };
@@ -833,20 +888,60 @@
    * @param {Object} opts
    * @param {String} opts.handle
    * @param {String} opts.xpub
+   * @param {String} opts.addr
    * @returns {PayWallet}
    */
-  Wallet.generateXPubWallet = function ({ handle, xpub }) {
+  Wallet.generatePayWallet = function ({ handle, xpub, addr }) {
     let d = new Date();
     return {
-      name: handle.toLowerCase(),
-      label: handle,
-      device: null,
       contact: handle,
+      device: null,
+      label: handle,
+      name: handle.toLowerCase(),
       priority: d.valueOf(),
+      addr: addr,
       xpub: xpub,
       created_at: d.toISOString(),
       archived_at: null,
     };
+  };
+
+  /**
+   * @param {String} xpub
+   * @throws {Error}
+   */
+  Wallet.assertXPub = function (xpub) {
+    try {
+      HdKey.fromExtendedKey(xpub);
+    } catch (e) {
+      //@ts-ignore - tsc bug
+      if (!e.message.includes("Invalid checksum")) {
+        throw e;
+      }
+      throw new Error(
+        `failed to parse contact's xpub (bad checksum): '${xpub}'`,
+      );
+    }
+  };
+
+  /**
+   * @param {String} xpub
+   * @returns {Boolean} - is xpub with valid checksum
+   */
+  Wallet.isXPub = function (xpub = "") {
+    // TODO check length
+
+    if (!xpub.startsWith("xpub")) {
+      return false;
+    }
+
+    try {
+      Wallet.assertXPub(xpub);
+    } catch (e) {
+      return false;
+    }
+
+    return true;
   };
 
   if ("undefined" !== typeof module) {
