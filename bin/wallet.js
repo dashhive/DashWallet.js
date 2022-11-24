@@ -8,6 +8,7 @@ let pkg = require("../package.json");
  * @typedef {import('../').Config} Config
  * @typedef {import('../').Safe} Safe
  * @typedef {import('../').Cache} Cache
+ * @typedef {import('../').MiniUtxo} MiniUtxo
  * @typedef {import('../').PayWallet} PayWallet
  * @typedef {import('../').Preferences} Preferences
  * @typedef {import('../').PrivateWallet} PrivateWallet
@@ -15,6 +16,7 @@ let pkg = require("../package.json");
  * @typedef {import('../').WalletInstance} WalletInstance
  */
 
+let Crypto = require("node:crypto");
 let Os = require("node:os");
 let home = Os.homedir();
 
@@ -26,7 +28,9 @@ let Fs = require("node:fs/promises");
 
 let Wallet = require("../wallet.js");
 
+let b58c = require("../lib/dashcheck.js");
 let Dashsight = require("dashsight");
+let Secp256k1 = require("secp256k1");
 // let Qr = require("./qr.js");
 
 /**
@@ -125,6 +129,26 @@ async function main() {
     return wallet;
   }
 
+  // TODO export, delete
+  // TODO add note/comment to wallet, address, tx, etc
+
+  let gen = removeFlag(args, ["create", "generate", "new"]);
+  if (gen) {
+    let genWif = removeFlag(args, ["wif", "address"]);
+    if (!genWif) {
+      console.error(`Unrecognized subcommand '${gen} ${args[0]}'`);
+      process.exit(1);
+    }
+    await generateWif(config, wallet, args);
+    return wallet;
+  }
+
+  let showStats = removeFlag(args, ["stat", "stats", "status"]);
+  if (showStats) {
+    await stat(config, wallet, args);
+    return wallet;
+  }
+
   let forceSync = removeFlag(args, ["reindex", "sync"]);
   if (forceSync) {
     let now = Date.now();
@@ -151,12 +175,15 @@ function usage() {
   console.info(`Usage:`);
   console.info(`    wallet balances`);
   console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
+  console.info(`    wallet generate address`);
   console.info(`    wallet import <./path/to.wif>`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
+  console.info(`    wallet stat <addr>`);
   console.info(`    wallet sync`);
   console.info(`    wallet version`);
   console.info();
   console.info(`Global Options:`);
+  // TODO --offline mode
   console.info(`    --config-dir ~/.config/dash/`);
   console.info();
 }
@@ -253,6 +280,39 @@ async function createWif(config, wallet, args) {
  * @param {WalletInstance} wallet
  * @param {Array<String>} args
  */
+async function generateWif(config, wallet, args) {
+  let privKey;
+  for (;;) {
+    // TODO browser
+    privKey = Crypto.randomBytes(32);
+    if (Secp256k1.privateKeyVerify(privKey)) {
+      break;
+    }
+  }
+
+  let wif = await b58c.encode({
+    version: Wallet.DashTypes.privateKeyVersion,
+    pubKeyHash: privKey.toString("hex"),
+    compressed: true,
+  });
+
+  // TODO --no-import
+  // TODO --offline (we don't need to check txs on what we just generated)
+  let addrInfos = await wallet.import({ wifs: [wif] });
+  let addrInfo = addrInfos[0];
+
+  console.info();
+  console.info(`Generated (and imported) the following private key (wif):`);
+  console.info();
+  console.info(`    ${addrInfo.addr}`);
+  console.info();
+}
+
+/**
+ * @param {Config} config
+ * @param {WalletInstance} wallet
+ * @param {Array<String>} args
+ */
 async function pay(config, wallet, args) {
   let dryRun = removeFlag(args, ["--dry-run"]);
 
@@ -317,6 +377,68 @@ async function getBalances(config, wallet, args) {
   console.info();
   let floatBalance = parseFloat((balance / Wallet.DUFFS).toFixed(8));
   console.info(`Total: ${floatBalance}`);
+}
+
+/**
+ * @param {Config} config
+ * @param {WalletInstance} wallet
+ * @param {Array<String>} args
+ */
+async function stat(config, wallet, args) {
+  let [addrPrefix] = args;
+  if (!addrPrefix) {
+    throw Error(`Usage: wallet stat <addr-like>`);
+  }
+
+  let addrInfos = await wallet.findAddrs(addrPrefix);
+  if (!addrInfos.length) {
+    console.error();
+    console.error(`'${addrPrefix}' did not matches any address in any wallets`);
+    console.error();
+    process.exit(1);
+  }
+
+  if (addrInfos.length > 1) {
+    console.error();
+    console.error(`'${addrPrefix}' matches the following addresses:`);
+    console.error();
+    addrInfos.forEach(
+      /** @param {Required<WalletAddress>} addrInfo */
+      function (addrInfo) {
+        console.error(`    ${addrInfo.addr}`);
+      },
+    );
+    console.error();
+    process.exit(1);
+  }
+
+  let addrs = addrInfos.map(
+    /** @param {Required<WalletAddress>} addrInfo */
+    function (addrInfo) {
+      return addrInfo.addr;
+    },
+  );
+  addrInfos = await wallet.stat({ addrs: addrs });
+
+  addrInfos.forEach(
+    /** @param {WalletAddress} addrInfo */
+    function (addrInfo) {
+      // TODO timestamp
+      let totalBalance = Wallet.getBalance(addrInfo.utxos);
+      let dashBalance = Wallet.toDash(totalBalance).toFixed(8);
+      console.info(
+        `${addrInfo.addr} (${dashBalance}) - ${addrInfo.wallet}:${addrInfo.hdpath}/${addrInfo.index}`,
+      );
+      if (addrInfo.utxos.length > 1) {
+        addrInfo.utxos.forEach(
+          /** @param {MiniUtxo} utxo */
+          function (utxo) {
+            console.info(`    ${utxo.satoshis}`);
+          },
+        );
+      }
+    },
+  );
 }
 
 /**
