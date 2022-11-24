@@ -32,6 +32,7 @@
 
   /**
    * @typedef WalletAddress
+   * @prop {String|undefined} addr - may be added (but not stored)
    * @prop {Number} checked_at
    * @prop {String} hdpath - hdkey path (ex: "m/44'/5'/0'/0")
    * @prop {Number} index - hdkey path index
@@ -124,7 +125,7 @@
    *
    * TODO txs and wifs?
    * @typedef Cache
-   * @prop {Object<String, Wallet>} addresses
+   * @prop {Object<String, WalletAddress>} addresses
    */
 
   /**
@@ -133,10 +134,16 @@
    * @prop {String?} device
    * @prop {String} label
    * @prop {Array<String>} mnemonic
+   * @prop {Array<WifInfo>} wifs - TODO maybe Object.<String, WifInfo>
    * @prop {String} name
    * @prop {Number} priority
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
+   *
+   * @typedef WifInfo
+   * @prop {String} addr
+   * @prop {String} wif
+   * @prop {String} created_at - ISO Date
    */
 
   /**
@@ -152,9 +159,11 @@
    * @prop {String?} archived_at - ISO Date
    */
 
-  Wallet.toDuff = DashApi.toDuff;
   Wallet.DashTypes = DashApi.DashTypes;
   Wallet.DUFFS = DashApi.DUFFS;
+  Wallet.getBalance = DashApi.getBalance;
+  Wallet.toDash = DashApi.toDash;
+  Wallet.toDuff = DashApi.toDuff;
 
   /**
    * @param {Config} config
@@ -215,6 +224,8 @@
         rxws.push(rxWallet);
       }
       rxWallet = rxws[0];
+
+      // Note: we should never have a WIF wallet here
 
       // TODO use derivation from main for non-imported wallets
       let seed = await Bip39.mnemonicToSeed(rxWallet.mnemonic.join(" "));
@@ -287,6 +298,10 @@
           return;
         }
 
+        if ("*" === addr.hdpath) {
+          // ignore
+        }
+
         let b = addr.utxos.reduce(
           /**
            * @param {Number} satoshis
@@ -308,6 +323,50 @@
     };
 
     /**
+     * @param {Object} opts
+     * @param {Array<String>} opts.wifs
+     * @param {Number} opts.now - ms since epoch (e.g. Date.now())
+     * @returns {Promise<Array<WalletAddress>>}
+     * TODO - multiuse: true
+     */
+    wallet.import = async function ({ wifs, now = Date.now() }) {
+      /** @type {Array<WalletAddress>} */
+      let addrInfos = [];
+
+      await wifs.reduce(async function (promise, wif) {
+        await promise;
+
+        let addr = await indexWif(wif, now);
+        let addrInfo = Object.assign(
+          { addr: addr },
+          safe.cache.addresses[addr],
+        );
+        addrInfos.push(addrInfo);
+
+        let exists = safe.privateWallets.wifs.wifs.some(
+          /** @param {WifInfo} wifInfo */
+          function (wifInfo) {
+            if (wifInfo.wif === wif) {
+              return true;
+            }
+          },
+        );
+        if (!exists) {
+          safe.privateWallets.wifs.wifs.push({
+            addr: addr,
+            wif: wif,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }, Promise.resolve());
+
+      await config.store.save(safe.privateWallets);
+      await config.store.save(safe.cache);
+
+      return addrInfos;
+    };
+
+    /**
      * @returns {Promise<Array<CoreUtxo>>}
      */
     wallet.utxos = async function () {
@@ -319,6 +378,11 @@
         if (!addrInfo.hdpath) {
           return;
         }
+
+        if ("*" === addrInfo.hdpath) {
+          // ignore
+        }
+
         addrInfo.utxos.forEach(
           /** @param {MiniUtxo} utxo */
           function (utxo) {
@@ -370,6 +434,13 @@
     wallet._nextWalletAddr = async function ({ handle, direction }) {
       let ws = await wallet.findPrivateWallets({ handle });
       let w = ws[0] || safe.privateWallets.main;
+
+      let hasMnemonic = w.mnemonic?.length > 0;
+      if (!hasMnemonic) {
+        throw new Error(
+          "[Sanity Fail] must use private, mnemonic wallet (not WIF or pay wallet)",
+        );
+      }
 
       let mnemonic = w.mnemonic.join(" ");
       let seed = await Bip39.mnemonicToSeed(mnemonic);
@@ -591,7 +662,7 @@
       await utxos.reduce(async function (promise, utxo) {
         await promise;
 
-        let wif = await wallet._toWif(utxo.address);
+        let wif = await wallet._findWif(utxo.address);
         wifs[wif] = true;
       }, Promise.resolve());
 
@@ -603,7 +674,7 @@
      * @param {String} addr - pay address
      * @returns {Promise<String>} - wif (private key)
      */
-    wallet._toWif = async function (addr) {
+    wallet._findWif = async function (addr) {
       let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         throw new Error(`cannot find address info for '${addr}'`);
@@ -614,6 +685,16 @@
       });
       if (!w) {
         throw new Error(`cannot find wallet for '${addr}'`);
+      }
+
+      if ("*" === addrInfo.hdpath) {
+        let wifInfo = w.wifs.find(
+          /** @param {WifInfo} wifInfo */
+          function (wifInfo) {
+            return addr === wifInfo.addr;
+          },
+        );
+        return wifInfo.wif;
       }
 
       let mnemonic = w.mnemonic.join(" ");
@@ -649,6 +730,7 @@
     //    - if it has txs and no balance, it's probably donezo
     // 3. Check empty (sparse) addresses for transactions
     // 4. For anything that has a balance, check again
+    // TODO - select specific wallets
     /**@type {Sync} */
     wallet.sync = async function ({ now, staletime = 60 * 1000 }) {
       await Object.values(safe.privateWallets).reduce(async function (
@@ -687,11 +769,44 @@
     };
 
     /**
-     * TODO - rename because this updates the cache, not just 'check'
+     * @param {String} wif
+     * @param {Number} now - ex: Date.now()
+     * //@prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
+     * @returns {Promise<String>}
+     */
+    async function indexWif(wif, now, staletime = 60 * 1000) {
+      let addr = await DashApi.wifToAddr(wif);
+
+      let info = safe.cache.addresses[addr];
+      if (!info) {
+        info = Wallet.generateAddress({
+          wallet: "wifs",
+          hdpath: "*",
+          index: -1,
+        });
+        safe.cache.addresses[addr] = info;
+      }
+
+      //let fresh = now - info.checked_at < staletime;
+      //if (!info.txs.length && !fresh) {
+      let insightTxs = await dashsight.getTxs(addr, 1);
+      let tx = insightTxs.txs[0];
+      if (tx?.time) {
+        let txid = tx.txid;
+        info.txs.push([tx.time, txid]);
+        info.utxos = await getMiniUtxos(addr);
+      }
+      info.checked_at = now;
+      //}
+
+      return addr;
+    }
+
+    /**
      * @param {String} walletName
      * @param {import('hdkey')} derivedRoot - TODO
      * @param {String} hdpath - derivation path
-     * @param {Number} now
+     * @param {Number} now - ex: Date.now()
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<Number>} - the next, possibly sparse, unused address index
      */
@@ -769,7 +884,11 @@
           }
           info.checked_at = now;
         }
+
+        // TODO check addrs that have utxos?
+
         // TODO also skip addresses that are known to be pending receiving a payment?
+
         if (info.txs.length) {
           recentlyUsedIndex = index;
           count = 0;
@@ -825,6 +944,15 @@
     if (!safe.privateWallets) {
       safe.privateWallets = {};
     }
+    if (!safe.privateWallets.wifs) {
+      safe.privateWallets.wifs = Wallet.generate({
+        label: "WIFs",
+        name: "wifs",
+        priority: 0,
+        wifs: [],
+      });
+      await config.store.save(safe.privateWallets);
+    }
     if (!safe.privateWallets.main) {
       safe.privateWallets.main = Wallet.generate({
         name: "main",
@@ -833,7 +961,6 @@
       });
       await config.store.save(safe.privateWallets);
     }
-    config.main = safe.privateWallets.main;
 
     return wallet;
   };
@@ -863,21 +990,24 @@
    * @param {String} opts.label - human friendly
    * @param {Number} opts.priority - sparse index, higher is higher
    * @param {String?} [opts.contact] - handle of contact
+   * @param {Array<WifInfo>} [opts.wifs] - loose wifs instead of mnemonic
    * @returns {PrivateWallet}
    */
-  Wallet.generate = function ({ name, label, priority, contact = null }) {
-    let mnemonic = Bip39.generateMnemonic();
-    if (!priority) {
-      priority = Date.now();
+  Wallet.generate = function ({ name, label, priority, contact = null, wifs }) {
+    let mnemonic = "";
+    if (!wifs) {
+      mnemonic = Bip39.generateMnemonic();
     }
+
     //let mnemonic = await Passphrase.generate(128);
     return {
       name: name.toLowerCase(),
       label: label,
       device: null,
       contact: contact,
-      priority: 0,
+      priority: priority || 0,
       mnemonic: mnemonic.split(/[,\s\n\|]+/g),
+      wifs: wifs || [],
       created_at: new Date().toISOString(),
       archived_at: null,
     };

@@ -11,6 +11,7 @@ let pkg = require("../package.json");
  * @typedef {import('../').PayWallet} PayWallet
  * @typedef {import('../').Preferences} Preferences
  * @typedef {import('../').PrivateWallet} PrivateWallet
+ * @typedef {import('../').WalletAddress} WalletAddress
  * @typedef {import('../').WalletInstance} WalletInstance
  */
 
@@ -106,6 +107,12 @@ async function main() {
     return wallet;
   }
 
+  let importWif = removeFlag(args, ["import"]);
+  if (importWif) {
+    await createWif(config, wallet, args);
+    return wallet;
+  }
+
   let send = removeFlag(args, ["send", "pay"]);
   if (send) {
     await pay(config, wallet, args);
@@ -144,6 +151,7 @@ function usage() {
   console.info(`Usage:`);
   console.info(`    wallet balances`);
   console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
+  console.info(`    wallet import <./path/to.wif>`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
   console.info(`    wallet sync`);
   console.info(`    wallet version`);
@@ -201,6 +209,43 @@ async function befriend(config, wallet, args) {
   console.info(`Share this "dropbox" wallet (xpub) with '${handle}':`);
   // TODO QR and next addr
   console.info(rxXPub);
+}
+
+/**
+ * @param {Config} config
+ * @param {WalletInstance} wallet
+ * @param {Array<String>} args
+ */
+async function createWif(config, wallet, args) {
+  let wifPaths = args;
+  if (!wifPaths.length) {
+    throw Error(`Usage: wallet import <./path/1.wif> [./path/2.wif, ...]`);
+  }
+
+  /** @type {Array<String>} */
+  let wifs = [];
+  await wifPaths.reduce(async function (promise, wifPath) {
+    await promise;
+
+    let wif = await Fs.readFile(wifPath, "utf8");
+    // TODO check wif-y-ness
+    wifs.push(wif.trim());
+  }, Promise.resolve());
+
+  let addrInfos = await wallet.import({
+    wifs,
+  });
+
+  console.info();
+  console.info(`Imported the following into the standalone 'wifs' wallet:`);
+  addrInfos.forEach(
+    /** @param {WalletAddress} addrInfo */
+    function (addrInfo) {
+      let totalBalance = Wallet.getBalance(addrInfo.utxos);
+      let dashBalance = Wallet.toDash(totalBalance);
+      console.info(`    ${addrInfo.addr} (${dashBalance})`);
+    },
+  );
 }
 
 /**
