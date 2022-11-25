@@ -136,8 +136,14 @@ async function main() {
     return wallet;
   }
 
-  // TODO export, delete
+  // TODO delete
   // TODO add note/comment to wallet, address, tx, etc
+
+  let exp = removeFlag(args, ["export"]);
+  if (exp) {
+    await exportWif(config, wallet, args);
+    return wallet;
+  }
 
   let gen = removeFlag(args, ["create", "generate", "new"]);
   if (gen) {
@@ -236,6 +242,7 @@ function usage() {
   console.info();
   console.info(`Usage:`);
   console.info(`    wallet balances`);
+  console.info(`    wallet export <addr> [./dir/ or ./file.wif]`);
   console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
   console.info(`    wallet generate address`);
   console.info(`    wallet import <./path/to.wif>`);
@@ -327,6 +334,76 @@ async function createWif(config, wallet, args) {
       console.info(`    ${addrInfo.addr} (${dashBalance})`);
     },
   );
+}
+
+/** @type {Subcommand} */
+async function exportWif(config, wallet, args) {
+  let [addrPrefix, wifPath] = args;
+
+  if (!addrPrefix?.length) {
+    throw Error(`Usage: wallet export <addr> [./dir/ or ./file.wif]`);
+  }
+
+  let addrInfos = await wallet.findAddrs(addrPrefix);
+  if (!addrInfos.length) {
+    console.error();
+    console.error(`'${addrPrefix}' did not matches any address in any wallets`);
+    console.error();
+    process.exit(1);
+  }
+
+  if (addrInfos.length > 1) {
+    console.error();
+    console.error(`'${addrPrefix}' matches the following addresses, pick one:`);
+    console.error();
+    addrInfos.forEach(
+      /** @param {Required<WalletAddress>} addrInfo */
+      function (addrInfo) {
+        console.error(`    ${addrInfo.addr}`);
+      },
+    );
+    console.error();
+    process.exit(1);
+  }
+
+  let addrInfo = addrInfos[0];
+  let wifInfo = await wallet.findWif(addrInfo);
+
+  if (!wifPath) {
+    wifPath = ".";
+  }
+
+  let showAddr = true;
+  let fullPath;
+  let stat = await Fs.stat(wifPath).catch(function (err) {
+    if ("ENOENT" === err.code) {
+      return null;
+    }
+    throw err;
+  });
+  if (!stat) {
+    // assumed to be a file that doesn't exist
+    fullPath = wifPath;
+  } else if (stat?.isDirectory()) {
+    showAddr = false;
+    fullPath = Path.join(wifPath, `${addrInfo.addr}.wif`);
+    let pathish = fullPath.startsWith(".") || fullPath.startsWith("/");
+    if (!pathish) {
+      fullPath = `./${fullPath}`;
+    }
+  } else {
+    // TODO --force
+    throw new Error(`'${wifPath}' already exists`);
+  }
+
+  await Fs.writeFile(fullPath, wifInfo.wif, "ascii");
+
+  console.info();
+  let addr = "";
+  if (showAddr) {
+    addr = ` (${addrInfo.addr})`;
+  }
+  console.info(`Wrote WIF to '${fullPath}'${addr}`);
 }
 
 /** @type {Subcommand} */

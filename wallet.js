@@ -39,6 +39,11 @@
    * @prop {Array<[Number, String]>} txs - tx.time and tx.txid
    * @prop {Array<MiniUtxo>} utxos
    * @prop {String} wallet - name of wallet (not a true id)
+   *
+   * @typedef WalletWifPartial
+   * @prop {String} wif - private key
+   *
+   * @typedef {Required<WalletAddress> & WalletWifPartial} WalletWif
    */
 
   //@ts-ignore
@@ -703,12 +708,23 @@
       await utxos.reduce(async function (promise, utxo) {
         await promise;
 
-        let wif = await wallet._findWif(utxo.address);
-        wifs[wif] = true;
+        let wifInfo = await wallet.findWif({ addr: utxo.address });
+        wifs[wifInfo.wif] = true;
       }, Promise.resolve());
 
       let wifkeys = Object.keys(wifs);
       return wifkeys;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.addr - pay address
+     * @returns {Promise<WalletWif>} - addr info with wif
+     */
+    wallet.findWif = async function ({ addr }) {
+      let wif = await wallet._findWif(addr);
+      let addrInfo = safe.cache.addresses[addr];
+      return Object.assign({ wif: wif }, addrInfo);
     };
 
     /**
@@ -719,6 +735,10 @@
       let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         throw new Error(`cannot find address info for '${addr}'`);
+      }
+
+      if (!addrInfo.hdpath) {
+        throw new Error(`private key for '${addr}' has not been imported`);
       }
 
       let w = Object.values(safe.privateWallets).find(function (wallet) {
