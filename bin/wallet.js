@@ -57,6 +57,13 @@ let storeConfig = {
 //@ts-ignore
 let config = {};
 
+/**
+ * @callback Subcommand
+ * @param {Config} config
+ * @param {WalletInstance} wallet
+ * @param {Array<String>} args
+ */
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -170,6 +177,61 @@ async function main() {
   throw new Error(`'${args[0]}' is not a recognized subcommand`);
 }
 
+/**
+ * @param {Array<String>} arr
+ * @param {Array<String>} aliases
+ * @returns {String?}
+ */
+function removeFlag(arr, aliases) {
+  /** @type {String?} */
+  let arg = null;
+  aliases.forEach(function (item) {
+    let index = arr.indexOf(item);
+    if (-1 === index) {
+      return null;
+    }
+
+    if (arg) {
+      throw Error(`duplicate flag ${item}`);
+    }
+
+    arg = arr.splice(index, 1)[0];
+  });
+
+  return arg;
+}
+
+/**
+ * @param {Array<String>} arr
+ * @param {Array<String>} aliases
+ * @returns {String?}
+ */
+function removeFlagAndArg(arr, aliases) {
+  /** @type {String?} */
+  let arg = null;
+  aliases.forEach(function (item) {
+    let index = arr.indexOf(item);
+    if (-1 === index) {
+      return null;
+    }
+
+    // flag
+    let flag = arr.splice(index, 1);
+
+    if (arg) {
+      throw Error(`duplicate flag ${item}`);
+    }
+
+    // flag's arg
+    arg = arr.splice(index, 1)[0];
+    if ("undefined" === typeof arg) {
+      throw Error(`'${flag}' requires an argument`);
+    }
+  });
+
+  return arg;
+}
+
 function usage() {
   console.info();
   console.info(`Usage:`);
@@ -188,11 +250,7 @@ function usage() {
   console.info();
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function befriend(config, wallet, args) {
   let [handle, xpubOrAddr] = args;
   if (!handle) {
@@ -238,11 +296,7 @@ async function befriend(config, wallet, args) {
   console.info(rxXPub);
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function createWif(config, wallet, args) {
   let wifPaths = args;
   if (!wifPaths.length) {
@@ -275,11 +329,7 @@ async function createWif(config, wallet, args) {
   );
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function generateWif(config, wallet, args) {
   let privKey;
   for (;;) {
@@ -308,11 +358,7 @@ async function generateWif(config, wallet, args) {
   console.info();
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function pay(config, wallet, args) {
   let dryRun = removeFlag(args, ["--dry-run"]);
 
@@ -351,11 +397,7 @@ async function pay(config, wallet, args) {
   console.info();
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function getBalances(config, wallet, args) {
   let balance = 0;
 
@@ -379,11 +421,7 @@ async function getBalances(config, wallet, args) {
   console.info(`Total: ${floatBalance}`);
 }
 
-/**
- * @param {Config} config
- * @param {WalletInstance} wallet
- * @param {Array<String>} args
- */
+/** @type {Subcommand} */
 async function stat(config, wallet, args) {
   let [addrPrefix] = args;
   if (!addrPrefix) {
@@ -439,30 +477,6 @@ async function stat(config, wallet, args) {
       }
     },
   );
-}
-
-/**
- * @param {Array<String>} arr
- * @param {Array<String>} aliases
- * @returns {String?}
- */
-function removeFlag(arr, aliases) {
-  /** @type {String?} */
-  let arg = null;
-  aliases.forEach(function (item) {
-    let index = arr.indexOf(item);
-    if (-1 === index) {
-      return null;
-    }
-
-    if (arg) {
-      throw Error(`duplicate flag ${item}`);
-    }
-
-    arg = arr.splice(index, 1)[0];
-  });
-
-  return arg;
 }
 
 let Storage = {}; //jshint ignore:line
@@ -558,37 +572,6 @@ async function safeReplace(filepath, contents, enc = null) {
   await Fs.unlink(`${filepath}.bak`).catch(Object);
   await Fs.rename(`${filepath}`, `${filepath}.bak`);
   await Fs.rename(`${filepath}.tmp`, `${filepath}`);
-}
-
-/**
- * @param {Array<String>} arr
- * @param {Array<String>} aliases
- * @returns {String?}
- */
-function removeFlagAndArg(arr, aliases) {
-  /** @type {String?} */
-  let arg = null;
-  aliases.forEach(function (item) {
-    let index = arr.indexOf(item);
-    if (-1 === index) {
-      return null;
-    }
-
-    // flag
-    let flag = arr.splice(index, 1);
-
-    if (arg) {
-      throw Error(`duplicate flag ${item}`);
-    }
-
-    // flag's arg
-    arg = arr.splice(index, 1)[0];
-    if ("undefined" === typeof arg) {
-      throw Error(`'${flag}' requires an argument`);
-    }
-  });
-
-  return arg;
 }
 
 main()
