@@ -55,7 +55,7 @@ let storeConfig = {
 
 /** @type {Config} */
 //@ts-ignore
-let config = {};
+let config = { staletime: 5 * 60 * 1000 };
 
 /**
  * @callback Subcommand
@@ -71,6 +71,11 @@ async function main() {
   if (confDir) {
     // TODO check validity
     storeConfig.dir = confDir;
+  }
+
+  let syncNow = removeFlagAndArg(args, ["--sync"]);
+  if (syncNow) {
+    config.staletime = 0;
   }
 
   config.dashsight = Dashsight.create({
@@ -133,6 +138,8 @@ async function main() {
   let showBalances = removeFlag(args, ["balance", "balances"]);
   if (showBalances) {
     await getBalances(config, wallet, args);
+    console.info();
+    process.exit(0);
     return wallet;
   }
 
@@ -252,8 +259,10 @@ function usage() {
   console.info(`    wallet version`);
   console.info();
   console.info(`Global Options:`);
-  // TODO --offline mode
   console.info(`    --config-dir ~/.config/dash/`);
+  // TODO set staletime = Infinity for --offline?
+  //console.info(`    --offline # skip update checks`);
+  console.info(`    --sync    # wait for sync first`);
   console.info();
 }
 
@@ -478,9 +487,9 @@ async function pay(config, wallet, args) {
 async function getBalances(config, wallet, args) {
   let balance = 0;
 
-  console.info("syncing...");
+  console.info("syncing... (updating info over 5 minutes old)");
   let now = Date.now();
-  await wallet.sync({ now });
+  await wallet.sync({ now: now, staletime: config.staletime });
 
   console.info();
   console.info("Wallets:");
@@ -655,9 +664,10 @@ main()
   .then(async function (wallet) {
     if (wallet) {
       console.info();
-      console.info("reindexing...");
+      // TODO 'q' to quit with process.stdin listener?
+      console.info("syncing... (ctrl+c to quit)");
       let now = Date.now();
-      await wallet.sync({ now: now });
+      await wallet.sync({ now: now, staletime: config.staletime });
       console.info();
     }
     process.exit(0);

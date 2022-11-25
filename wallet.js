@@ -51,9 +51,9 @@
 
   /**
    * @typedef Config
+   * @prop {Number} staletime
    * @prop {Safe} safe
    * @prop {Store} store
-   * @prop {Wallet} main
    * @prop {DashSightPartial} dashsight
    */
 
@@ -178,6 +178,10 @@
     let safe = config.safe;
     let wallet = {};
     let dashsight = config.dashsight;
+
+    if ("undefined" === typeof config.staletime) {
+      config.staletime = 60 * 1000;
+    }
 
     // TODO rename addContactByXPub, addContactByAddr?
     /** @type Befriend */
@@ -793,7 +797,11 @@
      * @param {Number} [opts.staletime]
      * @returns {Promise<Array<WalletAddress>>}
      */
-    wallet.stat = async function ({ addrs, now = Date.now(), staletime }) {
+    wallet.stat = async function ({
+      addrs,
+      now = Date.now(),
+      staletime = config.staletime,
+    }) {
       /** @type {Array<WalletAddress>} */
       let addrInfos = [];
 
@@ -827,7 +835,7 @@
     // 4. For anything that has a balance, check again
     // TODO - select specific wallets
     /**@type {Sync} */
-    wallet.sync = async function ({ now, staletime = 60 * 1000 }) {
+    wallet.sync = async function ({ now, staletime = config.staletime }) {
       await Object.values(safe.privateWallets).reduce(async function (
         promise,
         w,
@@ -869,7 +877,7 @@
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<void>}
      */
-    async function indexWifAddr(addr, now, staletime = 60 * 1000) {
+    async function indexWifAddr(addr, now, staletime = config.staletime) {
       let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         // TODO option for indexOrCreateWif effect vs stricter index-known-only
@@ -889,7 +897,7 @@
      * @param {Number} now - ex: Date.now()
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      */
-    async function updateAddrInfo(addr, now, staletime = 60 * 1000) {
+    async function updateAddrInfo(addr, now, staletime = config.staletime) {
       let info = safe.cache.addresses[addr];
 
       let fresh = false;
@@ -923,10 +931,10 @@
       derivedRoot,
       hdpath,
       now,
-      staletime = 60 * 1000,
+      staletime = config.staletime,
     ) {
       let MAX_SPARSE_UNCHECKED = 20;
-      let MAX_SPARSE_CHECKED = 5;
+      let MAX_SPARSE_CHECKED = 2;
 
       let recentlyUsedIndex = -1;
       let count = 0;
