@@ -345,8 +345,8 @@ async function createWif(config, wallet, args) {
     /** @param {WalletAddress} addrInfo */
     function (addrInfo) {
       let totalBalance = Wallet.getBalance(addrInfo.utxos);
-      let dashBalance = Wallet.toDash(totalBalance);
-      console.info(`    ${addrInfo.addr} (${dashBalance})`);
+      let dashBalance = Wallet.toDash(totalBalance).toFixed(8);
+      console.info(`    ${addrInfo.addr} (Đ${dashBalance})`);
     },
   );
 }
