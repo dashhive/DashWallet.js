@@ -182,16 +182,19 @@ async function main() {
     return wallet;
   }
 
+  let help = removeFlag(args, ["help", "--help", "-h"]);
+  if (help) {
+    usage();
+    process.exit(0);
+    return;
+  }
+
   if (!args[0]) {
     usage();
-    let help = removeFlag(args, ["help", "--help", "-h"]);
-    if (help) {
-      process.exit(0);
-      return;
-    }
     process.exit(1);
     return;
   }
+
   throw new Error(`'${args[0]}' is not a recognized subcommand`);
 }
 
