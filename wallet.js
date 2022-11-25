@@ -415,6 +415,24 @@
     /**
      * Find the address that matches the prefix.
      * @param {String} addrPrefix -
+     * @returns {Promise<Required<WalletAddress>?>}
+     */
+    wallet.findAddr = async function (addrPrefix) {
+      let addrInfos = await wallet.findAddrs(addrPrefix);
+      if (!addrInfos.length) {
+        return null;
+      }
+      if (1 === addrInfos.length) {
+        return addrInfos[0];
+      }
+      throw new Error(
+        `ambiguous address prefix '${addrPrefix}' has multiple matches`,
+      );
+    };
+
+    /**
+     * Find the address that matches the prefix.
+     * @param {String} addrPrefix -
      * @returns {Promise<Array<Required<WalletAddress>>>}
      */
     wallet.findAddrs = async function (addrPrefix) {
@@ -712,8 +730,13 @@
       await utxos.reduce(async function (promise, utxo) {
         await promise;
 
-        let wifInfo = await wallet.findWif({ addr: utxo.address });
-        wifs[wifInfo.wif] = true;
+        let wifInfo = await wallet.findWif({
+          addr: utxo.address,
+          _error: true,
+        });
+        if (wifInfo) {
+          wifs[wifInfo.wif] = true;
+        }
       }, Promise.resolve());
 
       let wifkeys = Object.keys(wifs);
@@ -723,17 +746,25 @@
     /**
      * @param {Object} opts
      * @param {String} opts.addr - pay address
-     * @returns {Promise<WalletWif>} - addr info with wif
+     * @param {Boolean} opts._error - for internal use
+     * @returns {Promise<WalletWif?>} - addr info with wif
      */
-    wallet.findWif = async function ({ addr }) {
-      let wif = await wallet._findWif(addr);
+    wallet.findWif = async function ({ addr, _error }) {
+      let wifData = await wallet._findWif(addr).catch(function (err) {
+        if (_error || "E_NO_PRIVATE_KEY" !== err.code) {
+          throw err;
+        }
+      });
+      if (!wifData) {
+        return null;
+      }
+
       let addrInfo = safe.cache.addresses[addr];
-      return Object.assign({ wif: wif }, addrInfo);
+      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
     };
 
     /**
      * @param {String} addr - pay address
-     * @returns {Promise<String>} - wif (private key)
      */
     wallet._findWif = async function (addr) {
       let addrInfo = safe.cache.addresses[addr];
@@ -742,7 +773,10 @@
       }
 
       if (!addrInfo.hdpath) {
-        throw new Error(`private key for '${addr}' has not been imported`);
+        let err = new Error(`private key for '${addr}' has not been imported`);
+        //@ts-ignore
+        err.code = "E_NO_PRIVATE_KEY";
+        throw err;
       }
 
       let w = Object.values(safe.privateWallets).find(function (wallet) {
@@ -759,7 +793,10 @@
             return addr === wifInfo.addr;
           },
         );
-        return wifInfo.wif;
+        return {
+          _wallet: w,
+          wif: wifInfo.wif,
+        };
       }
 
       let mnemonic = w.mnemonic.join(" ");
@@ -786,7 +823,46 @@
         pubKeyHash: derivedChild.privateKey.toString("hex"),
         compressed: true,
       });
-      return wif;
+
+      return { _wallet: w, wif: wif };
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.addr - pay address
+     * @param {Boolean} opts._error - for internal use
+     * @returns {Promise<WalletWif?>} - addr info with wif
+     */
+    wallet.removeWif = async function ({ addr }) {
+      let addrInfo = safe.cache.addresses[addr];
+      if (!addrInfo) {
+        return null;
+      }
+
+      let wifData = await wallet._findWif(addr).catch(function (err) {
+        if ("E_NO_PRIVATE_KEY" !== err.code) {
+          throw err;
+        }
+        return null;
+      });
+      if (!wifData) {
+        return null;
+      }
+
+      let wifIndex = wifData._wallet.wifs.findIndex(
+        /** @param {WifInfo} wifInfo */
+        function (wifInfo) {
+          return wifInfo.addr === addr;
+        },
+      );
+      wifData._wallet.wifs.splice(wifIndex, 1);
+      await config.store.save(safe.cache);
+
+      // TODO should there be an importAddr as compliment of importWif?
+      delete safe.cache.addresses[addr];
+      await config.store.save(safe.cache);
+
+      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
     };
 
     /**

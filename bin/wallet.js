@@ -143,7 +143,6 @@ async function main() {
     return wallet;
   }
 
-  // TODO delete
   // TODO add note/comment to wallet, address, tx, etc
 
   let exp = removeFlag(args, ["export"]);
@@ -160,6 +159,12 @@ async function main() {
       process.exit(1);
     }
     await generateWif(config, wallet, args);
+    return wallet;
+  }
+
+  let rm = removeFlag(args, ["delete", "remove", "rm"]);
+  if (rm) {
+    await remove(config, wallet, args);
     return wallet;
   }
 
@@ -254,6 +259,7 @@ function usage() {
   console.info(`    wallet generate address`);
   console.info(`    wallet import <./path/to.wif>`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
+  console.info(`    wallet remove <addr> [--no-wif]`);
   console.info(`    wallet stat <addr>`);
   console.info(`    wallet sync`);
   console.info(`    wallet version`);
@@ -343,6 +349,59 @@ async function createWif(config, wallet, args) {
       console.info(`    ${addrInfo.addr} (${dashBalance})`);
     },
   );
+}
+
+/** @type {Subcommand} */
+async function remove(config, wallet, args) {
+  let noWif = removeFlag(args, ["--no-wif"]);
+  let force = removeFlag(args, ["--force"]);
+  let [addrPrefix] = args;
+
+  if (!addrPrefix?.length) {
+    throw Error(`Usage: wallet remove <addr> [--no-wif]`);
+  }
+
+  let addrInfo = await wallet.findAddr(addrPrefix);
+  if (!addrInfo) {
+    console.error();
+    console.error(`'${addrPrefix}' did not matches any address in any wallets`);
+    console.error();
+    process.exit(1);
+  }
+
+  let wifInfo = await wallet.findWif({ addr: addrInfo.addr });
+  if (!wifInfo) {
+    console.info();
+    console.info(`Deleted cached info for '${addrInfo.addr}'`);
+    console.info(`(no associated WIF was found`);
+    return;
+  }
+
+  let totalBalance = Wallet.getBalance(wifInfo.utxos);
+  if (totalBalance > 0) {
+    if (!force) {
+      let dashBalance = Wallet.toDash(totalBalance).toFixed(8);
+      console.error();
+      console.error(
+        `'${addrInfo.addr}' still has a balance of ${dashBalance}. Use --force to continue..`,
+      );
+      console.error();
+
+      process.exit(1);
+      return;
+    }
+  }
+
+  await wallet.removeWif({ addr: addrInfo.addr });
+  if (!noWif) {
+    console.info();
+    console.info(`Removed WIF '${wifInfo.wif}'`);
+    console.info("(you may wish to save that as a backup)");
+    return;
+  }
+
+  console.info();
+  console.info(`Removed '${addrInfo.addr}' (and its associated WIF)`);
 }
 
 /** @type {Subcommand} */
