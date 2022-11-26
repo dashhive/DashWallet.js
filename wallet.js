@@ -302,16 +302,16 @@
       /** @type {Object.<String, Number>} */
       let balances = {};
 
-      Object.values(safe.cache.addresses).forEach(function (addr) {
-        if (!addr.hdpath) {
+      Object.values(safe.cache.addresses).forEach(function (addrInfo) {
+        if (!addrInfo.hdpath) {
           return;
         }
 
-        if ("*" === addr.hdpath) {
+        if ("*" === addrInfo.hdpath) {
           // ignore
         }
 
-        let b = addr.utxos.reduce(
+        let b = addrInfo.utxos.reduce(
           /**
            * @param {Number} satoshis
            * @param {InsightUtxo} utxo
@@ -322,10 +322,10 @@
           0,
         );
 
-        if (!balances[addr.wallet]) {
-          balances[addr.wallet] = 0;
+        if (!balances[addrInfo.wallet]) {
+          balances[addrInfo.wallet] = 0;
         }
-        balances[addr.wallet] += b;
+        balances[addrInfo.wallet] += b;
       });
 
       return balances;
@@ -977,24 +977,24 @@
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      */
     async function updateAddrInfo(addr, now, staletime = config.staletime) {
-      let info = safe.cache.addresses[addr];
+      let addrInfo = safe.cache.addresses[addr];
 
       let fresh = false;
       if (staletime) {
-        fresh = now - info.checked_at < staletime;
+        fresh = now - addrInfo.checked_at < staletime;
       }
-      //if (!info.txs.length && !fresh) {
+      //if (!addrInfo.txs.length && !fresh) {
       if (!fresh) {
         let insightTxs = await dashsight.getTxs(addr, 1);
         let tx = insightTxs.txs[0];
         if (tx?.time) {
           let txid = tx.txid;
-          info.txs.push([tx.time, txid]);
-          info.utxos = await getMiniUtxos(addr);
+          addrInfo.txs.push([tx.time, txid]);
+          addrInfo.utxos = await getMiniUtxos(addr);
         }
-        info.checked_at = now;
+        addrInfo.checked_at = now;
       }
-      return info;
+      return addrInfo;
     }
 
     /**
@@ -1025,8 +1025,8 @@
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });
-        let info = safe.cache.addresses[addr];
-        if (info?.txs.length) {
+        let addrInfo = safe.cache.addresses[addr];
+        if (addrInfo?.txs.length) {
           //console.log("[DEBUG] [used]", index);
           recentlyUsedIndex = index;
           count = 0;
@@ -1053,38 +1053,38 @@
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });
-        let info = safe.cache.addresses[addr];
-        if (!info) {
-          info = Wallet.generateAddress({
+        let addrInfo = safe.cache.addresses[addr];
+        if (!addrInfo) {
+          addrInfo = Wallet.generateAddress({
             wallet: walletName,
             hdpath: hdpath,
             index: index,
           });
-          safe.cache.addresses[addr] = info;
+          safe.cache.addresses[addr] = addrInfo;
         }
 
-        let fresh = now - info.checked_at < staletime;
-        if (!info.txs.length && !fresh) {
+        let fresh = now - addrInfo.checked_at < staletime;
+        if (!addrInfo.txs.length && !fresh) {
           let insightTxs = await dashsight.getTxs(addr, 1);
           let tx = insightTxs.txs[0];
           if (tx?.time) {
             //console.log(`[DEBUG] update ${index}: txs`);
             let txid = tx.txid;
             // TODO link utxos to txs
-            info.txs.push([tx.time, txid]);
+            addrInfo.txs.push([tx.time, txid]);
             // TODO second pass is to check utxos again
-            info.utxos = await getMiniUtxos(addr);
+            addrInfo.utxos = await getMiniUtxos(addr);
           } else {
             //console.log(`[DEBUG] update ${index}: NO txs`);
           }
-          info.checked_at = now;
+          addrInfo.checked_at = now;
         }
 
         // TODO check addrs that have utxos?
 
         // TODO also skip addresses that are known to be pending receiving a payment?
 
-        if (info.txs.length) {
+        if (addrInfo.txs.length) {
           recentlyUsedIndex = index;
           count = 0;
         } else {
