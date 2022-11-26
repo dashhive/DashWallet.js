@@ -935,13 +935,13 @@
         let direction = 0;
         let hdpath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
         derivedRoot = privateRoot.derive(hdpath);
-        await indexPayAddrs(w.name, derivedRoot, hdpath, now, staletime);
+        await indexPrivateAddrs(w.name, derivedRoot, hdpath, now, staletime);
 
         // change addresses
         direction = 1;
         hdpath = `m/44'/${DashApi.DashTypes.coinType}'/${account}'/${direction}`;
         derivedRoot = privateRoot.derive(hdpath);
-        await indexPayAddrs(w.name, derivedRoot, hdpath, now, staletime);
+        await indexPrivateAddrs(w.name, derivedRoot, hdpath, now, staletime);
 
         await config.store.save(safe.privateWallets);
       },
@@ -975,25 +975,43 @@
      * @param {String} addr
      * @param {Number} now - ex: Date.now()
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
+     * @prop {Boolean} [_force] - treat as a new address, even if it's been used
      */
-    async function updateAddrInfo(addr, now, staletime = config.staletime) {
+    async function updateAddrInfo(
+      addr,
+      now,
+      staletime = config.staletime,
+      _force = false,
+    ) {
       let addrInfo = safe.cache.addresses[addr];
 
       let fresh = false;
       if (staletime) {
         fresh = now - addrInfo.checked_at < staletime;
       }
-      //if (!addrInfo.txs.length && !fresh) {
       if (!fresh) {
-        let insightTxs = await dashsight.getTxs(addr, 1);
-        let tx = insightTxs.txs[0];
-        if (tx?.time) {
-          let txid = tx.txid;
-          addrInfo.txs.push([tx.time, txid]);
+        let mightBeSpendable = addrInfo.utxos.length;
+        let mightBeNew = !mightBeSpendable && !addrInfo.txs.length;
+
+        let _force = false;
+        if (_force || mightBeNew) {
+          let insightTxs = await dashsight.getTxs(addr, 1);
+          let tx = insightTxs.txs[0];
+          if (tx?.time) {
+            let txid = tx.txid;
+            // TODO store many txs
+            addrInfo.txs = [[tx.time, txid]];
+            // TODO determine this from txs?
+            addrInfo.utxos = await getMiniUtxos(addr);
+          }
+        } else if (mightBeSpendable) {
+          // we don't need to recheck transactions
           addrInfo.utxos = await getMiniUtxos(addr);
         }
+
         addrInfo.checked_at = now;
       }
+
       return addrInfo;
     }
 
@@ -1063,22 +1081,8 @@
           safe.cache.addresses[addr] = addrInfo;
         }
 
-        let fresh = now - addrInfo.checked_at < staletime;
-        if (!addrInfo.txs.length && !fresh) {
-          let insightTxs = await dashsight.getTxs(addr, 1);
-          let tx = insightTxs.txs[0];
-          if (tx?.time) {
-            //console.log(`[DEBUG] update ${index}: txs`);
-            let txid = tx.txid;
-            // TODO link utxos to txs
-            addrInfo.txs.push([tx.time, txid]);
-            // TODO second pass is to check utxos again
-            addrInfo.utxos = await getMiniUtxos(addr);
-          } else {
-            //console.log(`[DEBUG] update ${index}: NO txs`);
-          }
-          addrInfo.checked_at = now;
-        }
+        await updateAddrInfo(addr, now, staletime);
+        addrInfo = safe.cache.addresses[addr];
 
         // TODO check addrs that have utxos?
 
@@ -1098,6 +1102,43 @@
       }
 
       return recentlyUsedIndex + 1;
+    }
+
+    /**
+     * @param {String} walletName
+     * @param {import('hdkey')} derivedRoot - TODO
+     * @param {String} hdpath - derivation path
+     * @param {Number} now - ex: Date.now()
+     * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
+     * @returns {Promise<Number>} - the next, possibly sparse, unused address index
+     */
+    async function indexPrivateAddrs(
+      walletName,
+      derivedRoot,
+      hdpath,
+      now,
+      staletime = config.staletime,
+    ) {
+      let addrEntries = Object.entries(safe.cache.addresses);
+      await addrEntries.reduce(async function (promise, [addr, addrInfo]) {
+        await promise;
+
+        // also indicates the wallet is private
+        // (and that there's a corresponding private key)
+        if (!addrInfo.hdpath) {
+          return;
+        }
+
+        await updateAddrInfo(addr, now, staletime);
+      }, Promise.resolve());
+
+      return await indexPayAddrs(
+        walletName,
+        derivedRoot,
+        hdpath,
+        now,
+        staletime,
+      );
     }
 
     /**
