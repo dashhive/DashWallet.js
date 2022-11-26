@@ -8,12 +8,17 @@ let pkg = require("../package.json");
  * @typedef {import('../').Config} Config
  * @typedef {import('../').Safe} Safe
  * @typedef {import('../').Cache} Cache
+ * @typedef {import('dashsight').CoreUtxo} CoreUtxo
  * @typedef {import('../').MiniUtxo} MiniUtxo
  * @typedef {import('../').PayWallet} PayWallet
  * @typedef {import('../').Preferences} Preferences
  * @typedef {import('../').PrivateWallet} PrivateWallet
  * @typedef {import('../').WalletAddress} WalletAddress
  * @typedef {import('../').WalletInstance} WalletInstance
+ * @typedef {CoreUtxo & WalletUtxoPartial} WalletUtxo
+ *
+ * @typedef WalletUtxoPartial
+ * @prop {String} wallet
  */
 
 let Crypto = require("node:crypto");
@@ -64,13 +69,21 @@ let config = { staletime: 5 * 60 * 1000 };
  * @param {Array<String>} args
  */
 
+let jsonOut = false;
+
 async function main() {
+  /* jshint maxcomplexity:1000 */
   let args = process.argv.slice(2);
 
   let confDir = removeFlagAndArg(args, ["-c", "--config-dir"]);
   if (confDir) {
     // TODO check validity
     storeConfig.dir = confDir;
+  }
+
+  let jsonArg = removeFlag(args, ["--json"]);
+  if (jsonArg) {
+    jsonOut = true;
   }
 
   let syncNow = removeFlagAndArg(args, ["--sync"]);
@@ -126,6 +139,12 @@ async function main() {
   let importWif = removeFlag(args, ["import"]);
   if (importWif) {
     await createWif(config, wallet, args);
+    return wallet;
+  }
+
+  let list = removeFlag(args, ["list"]);
+  if (list) {
+    await listCoins(config, wallet, args);
     return wallet;
   }
 
@@ -261,6 +280,7 @@ function usage() {
   console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
   console.info(`    wallet generate address`);
   console.info(`    wallet import <./path/to.wif>`);
+  console.info(`    wallet list [--sort wallet,amount,addr] [--json]`);
   console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
   console.info(`    wallet remove <addr> [--no-wif]`);
   console.info(`    wallet stat <addr>`);
@@ -569,6 +589,143 @@ async function getBalances(config, wallet, args) {
   console.info(`Total: ${floatBalance}`);
 }
 
+/**
+ * @callback CoinSorter
+ * @param {Pick<WalletUtxo,"address"|"satoshis"|"wallet">} a
+ * @param {Pick<WalletUtxo,"address"|"satoshis"|"wallet">} b
+ * @returns {Number}
+ */
+
+/** @type {Object.<String, CoinSorter>} */
+let coinSorters = {
+  addr:
+    /** @type {CoinSorter} */
+    function byAddrAsc(a, b) {
+      if (a.address > b.address) {
+        return 1;
+      }
+      if (a.address < b.address) {
+        return -1;
+      }
+      return 0;
+    },
+  amount:
+    /** @type {CoinSorter} */
+    function bySatoshisDesc(a, b) {
+      return b.satoshis - a.satoshis;
+    },
+  wallet:
+    /** @type {CoinSorter} */
+    function byWalletAsc(a, b) {
+      if (a.wallet > b.wallet) {
+        return 1;
+      }
+      if (a.wallet < b.wallet) {
+        return -1;
+      }
+      return 0;
+    },
+};
+
+/** @type {Subcommand} */
+async function listCoins(config, wallet, args) {
+  let sortArg = removeFlagAndArg(args, ["--sort"]) || "";
+  let sortBys = sortArg.split(/[\s,]/).filter(Boolean);
+  if (!sortBys.length) {
+    sortBys = ["wallet", "amount", "addr"];
+  }
+
+  let safe = config.safe;
+
+  let _utxos = await wallet.utxos();
+  if (!_utxos.length) {
+    let sadMsg = `Your wallet is empty. No coins. Sad day. 😢`;
+    if (jsonOut) {
+      console.error(sadMsg);
+      console.info(JSON.stringify("[]", null, 2));
+      return;
+    }
+    console.info();
+    console.info(sadMsg);
+    return;
+  }
+
+  /** @param {WalletUtxo} utxo */
+  function sortatizeUtxo(utxo) {
+    return Object.assign({}, utxo, {
+      wallet: utxo.wallet
+        .toLowerCase()
+        // make contacts sort lower
+        .replace(/^@/, "|"),
+    });
+  }
+
+  let utxos = _utxos.map(
+    /** @param {CoreUtxo} utxo */
+    function (utxo) {
+      return Object.assign(
+        {
+          wallet: safe.cache.addresses[utxo.address].wallet,
+        },
+        utxo,
+      );
+    },
+  );
+  utxos.sort(
+    /** @type {CoinSorter} */
+    function (a, b) {
+      let result = 0;
+      sortBys.some(function (sortBy) {
+        if (!coinSorters[sortBy]) {
+          throw new Error(`unrecognized sort '${sortBy}'`);
+        }
+
+        //@ts-ignore - TODO
+        result = coinSorters[sortBy](sortatizeUtxo(a), sortatizeUtxo(b));
+        return result;
+      });
+      return result;
+    },
+  );
+
+  let maxLen = Wallet.toDash(utxos[0].satoshis).toFixed(8).length;
+  let amountLabel = "Amount".padStart(maxLen, " ");
+
+  if (jsonOut) {
+    console.info(JSON.stringify(utxos, null, 2));
+    return;
+  }
+  console.info();
+  console.info(`    ${amountLabel}  Address  Coin (Tx:Out)  Wallet`);
+
+  /** @type {Object.<String, Boolean>} */
+  let usedAddrs = {};
+  utxos.forEach(
+    /** @param {MiniUtxo} utxo */
+    function (utxo) {
+      let dashAmount = Wallet.toDash(utxo.satoshis)
+        .toFixed(8)
+        .padStart(maxLen, " ");
+
+      let id = utxo.txId.slice(0, 6);
+
+      let addrId = utxo.address.slice(0, 7);
+      if (!usedAddrs[utxo.address]) {
+        addrId = ` ${addrId}`;
+        usedAddrs[utxo.address] = true;
+      } else {
+        addrId = `*${addrId}`;
+      }
+
+      let walletName = safe.cache.addresses[utxo.address].wallet;
+
+      console.info(
+        `    ${dashAmount} ${addrId}  ${id}:${utxo.outputIndex}       ${walletName}`,
+      );
+    },
+  );
+}
+
 /** @type {Subcommand} */
 async function stat(config, wallet, args) {
   let [addrPrefix] = args;
@@ -725,9 +882,15 @@ async function safeReplace(filepath, contents, enc = null) {
 main()
   .then(async function (wallet) {
     if (wallet) {
-      console.info();
       // TODO 'q' to quit with process.stdin listener?
-      console.info("syncing... (ctrl+c to quit)");
+      let syncMsg = "syncing... (ctrl+c to quit)";
+      if (jsonOut) {
+        console.error();
+        console.error(syncMsg);
+      } else {
+        console.info();
+        console.info(syncMsg);
+      }
       let now = Date.now();
       await wallet.sync({ now: now, staletime: config.staletime });
       console.info();
