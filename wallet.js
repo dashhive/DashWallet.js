@@ -673,7 +673,10 @@
         .from(utxos);
       tmpTx.to(nextPayAddr, amount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
-      let changeAddr = await wallet._nextWalletAddr({ handle, direction: 1 });
+      let changeAddr = await wallet._nextWalletAddr({
+        handle: "main",
+        direction: 1,
+      });
       await config.store.save(safe.cache);
       tmpTx.change(changeAddr);
       tmpTx.sign(wifs);
