@@ -597,8 +597,9 @@
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} opts.amount - duffs/satoshis
+     * @param {Array<CoreUtxo>} [opts.utxos]
      */
-    wallet.createTx = async function ({ handle, amount }) {
+    wallet.createTx = async function ({ handle, amount, utxos = [] }) {
       let nextPayAddr = "";
       let isPayAddr = _isPayAddr(handle);
       if (isPayAddr) {
@@ -634,18 +635,20 @@
         }
       }
 
-      let allUtxos = await wallet.utxos();
-
       // TODO make more accurate? How many bytes per additional utxo? signature?
       let feePreEstimate = 1000;
-      //let insightUtxos = await dashsight.getUtxos(utxoAddr);
-      //let allUtxos = await DashApi.getUtxos(insightUtxos);
-      let utxos = await DashApi.getOptimalUtxos(
-        allUtxos,
-        amount + feePreEstimate,
-      );
-      let balance = DashApi.getBalance(utxos);
+      let allUtxos = utxos;
+      if (!utxos.length) {
+        allUtxos = await wallet.utxos();
+        utxos = await DashApi.getOptimalUtxos(
+          allUtxos,
+          amount + feePreEstimate,
+        );
+        // TODO check utxos are available
+        // (or preferably fail and retry)
+      }
 
+      let balance = DashApi.getBalance(utxos);
       if (!utxos.length) {
         let totalBalance = DashApi.getBalance(allUtxos);
         let dashBalance = DashApi.toDash(totalBalance);
@@ -703,6 +706,7 @@
       tx.sign(wifs);
 
       let txHex = tx.serialize();
+      // TODO: MUST return used UTXOS!!
       return txHex;
     };
 

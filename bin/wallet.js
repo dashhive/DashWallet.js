@@ -530,6 +530,7 @@ async function generateWif(config, wallet, args) {
 async function pay(config, wallet, args) {
   let dryRun = removeFlag(args, ["--dry-run"]);
 
+  // TODO sort between addrs, wifs, and utxos
   let [handle, DASH] = args;
   if (!handle) {
     throw Error(
