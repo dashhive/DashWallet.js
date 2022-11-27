@@ -556,6 +556,32 @@
 
     /**
      * @param {Object} opts
+     * @param {String} opts.handle
+     */
+    wallet.createNextReceiveAddr = async function ({ handle }) {
+      let ws = await wallet.findPrivateWallets({ handle });
+      let privateWallet = ws[0];
+
+      if (!privateWallet.mnemonic.length) {
+        // TODO generate new WIF
+        throw new Error("not implemented");
+      }
+
+      // TODO get back NextIndex
+      let receiveAddr = await wallet._nextWalletAddr({
+        handle: handle,
+        direction: 0,
+      });
+      await config.store.save(safe.cache);
+
+      return {
+        addr: receiveAddr,
+        //index: nextIndex,
+      };
+    };
+
+    /**
+     * @param {Object} opts
      * @param {import('hdkey')} opts.derivedRoot
      * @param {Number} opts.index
      * @returns {Promise<String>} - next pay addr

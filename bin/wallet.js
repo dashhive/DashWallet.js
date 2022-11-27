@@ -337,8 +337,11 @@ async function befriend(config, wallet, args) {
 
   console.info();
   console.info(`Share this "dropbox" wallet (xpub) with '${handle}':`);
-  // TODO QR and next addr
+  // TODO QR
   console.info(rxXPub);
+  console.info();
+  let rxAddr = await wallet.createNextReceiveAddr({ handle });
+  console.info(`(next address is '${rxAddr.addr}')`);
 }
 
 /** @type {Subcommand} */
