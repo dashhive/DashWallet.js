@@ -700,7 +700,7 @@ async function listCoins(config, wallet, args) {
     return;
   }
   console.info();
-  console.info(`    ${amountLabel}  Address  Coin (Tx:Out)  Wallet`);
+  console.info(`    ${amountLabel}  Coin (Addr:Tx:Out)    Wallet`);
 
   /** @type {Object.<String, Boolean>} */
   let usedAddrs = {};
@@ -711,20 +711,20 @@ async function listCoins(config, wallet, args) {
         .toFixed(8)
         .padStart(maxLen, " ");
 
-      let id = utxo.txId.slice(0, 6);
+      let txId = utxo.txId.slice(0, 6);
 
-      let addrId = utxo.address.slice(0, 7);
+      let addrId = utxo.address.slice(0, 9);
+      let reused = " ";
       if (!usedAddrs[utxo.address]) {
-        addrId = ` ${addrId}`;
         usedAddrs[utxo.address] = true;
       } else {
-        addrId = `*${addrId}`;
+        reused = `*`;
       }
 
       let walletName = safe.cache.addresses[utxo.address].wallet;
 
       console.info(
-        `    ${dashAmount} ${addrId}  ${id}:${utxo.outputIndex}       ${walletName}`,
+        `    ${dashAmount}  ${addrId}:${txId}:${utxo.outputIndex} ${reused}  ${walletName}`,
       );
     },
   );
