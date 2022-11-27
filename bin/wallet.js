@@ -157,9 +157,7 @@ async function main() {
   let showBalances = removeFlag(args, ["balance", "balances"]);
   if (showBalances) {
     await getBalances(config, wallet, args);
-    console.info();
-    process.exit(0);
-    return wallet;
+    return null;
   }
 
   // TODO add note/comment to wallet, address, tx, etc
@@ -198,14 +196,13 @@ async function main() {
     let now = Date.now();
     console.info("syncing...");
     await wallet.sync({ now: now, staletime: 0 });
-    return wallet;
+    return null;
   }
 
   let help = removeFlag(args, ["help", "--help", "-h"]);
   if (help) {
     usage();
-    process.exit(0);
-    return;
+    return null;
   }
 
   if (!args[0]) {
@@ -596,6 +593,7 @@ async function pay(config, wallet, args) {
     );
     console.info(tx.hex);
   } else {
+    // TODO sendTx
     let txResult = await config.dashsight.instantSend(tx.hex);
     console.info("Sent!");
     console.info();
@@ -665,6 +663,23 @@ async function pay(config, wallet, args) {
 
   let changeAmount = Wallet.toDash(tx.change).toFixed(8).padStart(maxLen, " ");
   console.info(`Change:                  ${changeAmount}`);
+
+  // TODO move to sendTx
+  let now = Date.now();
+  await wallet._spendUtxos({
+    utxos: tx.utxos,
+    now: now,
+  });
+  await wallet._updateAddrInfo(tx._changeAddr, now, 0);
+
+  // TODO pre-sync with return info
+  config.safe.cache.addresses[tx._changeAddr].sync_at = now + 3000;
+  let recipAddrInfo = config.safe.cache.addresses[tx._recipientAddr];
+  if (recipAddrInfo) {
+    recipAddrInfo.sync_at = now + 3000;
+  }
+
+  await config.store.save(config.safe.cache);
 }
 
 /**
@@ -1118,20 +1133,23 @@ async function safeReplace(filepath, contents, enc = null) {
 
 main()
   .then(async function (wallet) {
-    if (wallet) {
-      // TODO 'q' to quit with process.stdin listener?
-      let syncMsg = "syncing... (ctrl+c to quit)";
-      if (jsonOut) {
-        console.error();
-        console.error(syncMsg);
-      } else {
-        console.info();
-        console.info(syncMsg);
-      }
-      let now = Date.now();
-      await wallet.sync({ now: now, staletime: config.staletime });
-      console.info();
+    if (!wallet) {
+      process.exit(0);
     }
+
+    // TODO 'q' to quit with process.stdin listener?
+    let syncMsg = "syncing... (ctrl+c to quit)";
+    if (jsonOut) {
+      console.error();
+      console.error(syncMsg);
+    } else {
+      console.info();
+      console.info(syncMsg);
+    }
+    let now = Date.now();
+    await wallet.sync({ now: now, staletime: config.staletime });
+    console.info();
+
     process.exit(0);
   })
   .catch(function (err) {

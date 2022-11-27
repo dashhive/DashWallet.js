@@ -620,7 +620,39 @@
         },
       );
 
+      let now = Date.now();
+      await wallet._spendUtxos({ utxos: tx.utxos, now: now });
+      await wallet._updateAddrInfo(tx._changeAddr, now, 0);
+      await config.store.save(safe.cache);
+
       return Object.assign({ response: result }, tx);
+    };
+
+    /**
+     * Mark UTXOs as spent
+     * @param {Object} opts
+     * @param {Number} opts.now
+     * @param {Array<CoreUtxo>} opts.utxos
+     */
+    wallet._spendUtxos = async function ({ utxos, now }) {
+      utxos.forEach(function (utxo) {
+        let addrInfo = safe.cache.addresses[utxo.address];
+
+        let index = addrInfo.utxos.findIndex(
+          /** @param {MiniUtxo} _utxo */
+          function (_utxo) {
+            let txMatch = utxo.txId === _utxo.txId;
+            let voutMatch = utxo.outputIndex === _utxo.outputIndex;
+
+            return txMatch && voutMatch;
+          },
+        );
+
+        if (index >= 0) {
+          addrInfo.utxos.splice(index, 1);
+          addrInfo.checked_at = now;
+        }
+      });
     };
 
     /**
@@ -628,8 +660,14 @@
      * @param {String} opts.handle
      * @param {Number?} opts.amount - duffs/satoshis
      * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {Number} [opts.now] - ms
      */
-    wallet.createTx = async function ({ handle, amount, utxos }) {
+    wallet.createTx = async function ({
+      handle,
+      amount,
+      utxos,
+      now = Date.now(),
+    }) {
       let nextPayAddr = "";
       let isPayAddr = _isPayAddr(handle);
       if (isPayAddr) {
@@ -658,7 +696,6 @@
 
         nextPayAddr = payWallet.addr;
         if (!nextPayAddr) {
-          let now = Date.now();
           let derivedRoot = HdKey.fromExtendedKey(payWallet.xpub);
           let nextIndex = await indexPayAddrs(
             payWallet.name,
@@ -770,13 +807,22 @@
 
       let txHex = tx.serialize();
 
+      // TODO pre-sync with return info
+      safe.cache.addresses[changeAddr].sync_at = now + 3000;
+      let recipAddrInfo = safe.cache.addresses[changeAddr];
+      if (recipAddrInfo) {
+        recipAddrInfo.sync_at = now + 3000;
+      }
+
       return {
         hex: txHex,
         utxos: utxos,
         balance: balance,
+        _recipientAddr: nextPayAddr,
         amount: payAmount,
         fee: fee,
         change: balance - (payAmount + fee),
+        _changeAddr: changeAddr,
       };
     };
 
@@ -969,7 +1015,7 @@
           );
         }
 
-        await updateAddrInfo(addr, now, staletime);
+        await wallet._updateAddrInfo(addr, now, staletime);
         addrInfo = safe.cache.addresses[addr];
 
         addrInfos.push(Object.assign({ addr: addr }, addrInfo));
@@ -1042,7 +1088,7 @@
         safe.cache.addresses[addr] = addrInfo;
       }
 
-      await updateAddrInfo(addr, now, staletime);
+      await wallet._updateAddrInfo(addr, now, staletime);
     }
 
     /**
@@ -1051,7 +1097,7 @@
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @prop {Boolean} [_force] - treat as a new address, even if it's been used
      */
-    async function updateAddrInfo(
+    wallet._updateAddrInfo = async function (
       addr,
       now,
       staletime = config.staletime,
@@ -1063,6 +1109,15 @@
       if (staletime) {
         fresh = now - addrInfo.checked_at < staletime;
       }
+
+      // TODO pre-sync change addr with instant send utxo results
+      if (addrInfo.sync_at) {
+        if (now > addrInfo.sync_at) {
+          fresh = false;
+          addrInfo.sync_at = undefined;
+        }
+      }
+
       if (!fresh) {
         let mightBeSpendable = addrInfo.utxos.length;
         let mightBeNew = !mightBeSpendable && !addrInfo.txs.length;
@@ -1087,7 +1142,7 @@
       }
 
       return addrInfo;
-    }
+    };
 
     /**
      * @param {String} walletName
@@ -1155,7 +1210,7 @@
           safe.cache.addresses[addr] = addrInfo;
         }
 
-        await updateAddrInfo(addr, now, staletime);
+        await wallet._updateAddrInfo(addr, now, staletime);
         addrInfo = safe.cache.addresses[addr];
 
         // TODO check addrs that have utxos?
@@ -1197,13 +1252,17 @@
       await addrEntries.reduce(async function (promise, [addr, addrInfo]) {
         await promise;
 
-        // also indicates the wallet is private
-        // (and that there's a corresponding private key)
-        if (!addrInfo.hdpath) {
+        if (walletName !== addrInfo.wallet) {
           return;
         }
 
-        await updateAddrInfo(addr, now, staletime);
+        // also indicates the wallet is private
+        // (and that there's a corresponding private key)
+        if (hdpath !== addrInfo.hdpath) {
+          return;
+        }
+
+        await wallet._updateAddrInfo(addr, now, staletime);
       }, Promise.resolve());
 
       return await indexPayAddrs(
