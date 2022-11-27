@@ -165,10 +165,25 @@ Creates a transaction (hex string) for the given amount to the given contact
 using `utxo`s from across all `PrivateWallet`s.
 
 ```js
-await wallet.createTx({ handle, amount });
+await wallet.createTx({ handle, amount, utxos });
 ```
 
-The result can be used with `dashsight.instantSend(txHex)`.
+```json
+{
+  "hex": "abc123...",
+  "utxos": [
+    {
+      "address": "...",
+      "outputIndex": 0,
+      "satoshis": 1000,
+      "script": "...",
+      "txId": "..."
+    }
+  ]
+}
+```
+
+The result can be used with `dashsight.instantSend(tx.hex)`.
 
 # wallet#findChangeWallet(friendOpts)
 

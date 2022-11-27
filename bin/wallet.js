@@ -142,7 +142,7 @@ async function main() {
     return wallet;
   }
 
-  let list = removeFlag(args, ["list"]);
+  let list = removeFlag(args, ["coins", "list"]);
   if (list) {
     await listCoins(config, wallet, args);
     return wallet;
@@ -281,7 +281,9 @@ function usage() {
   console.info(`    wallet generate address`);
   console.info(`    wallet import <./path/to.wif>`);
   console.info(`    wallet list [--sort wallet,amount,addr] [--json]`);
-  console.info(`    wallet pay <handle|pay-addr> <DASH> [--dry-run]`);
+  console.info(
+    `    wallet pay <handle|pay-addr> <DASH> [--dry-run] [--coins Xxxxx:xx:0,...]`,
+  );
   console.info(`    wallet remove <addr> [--no-wif]`);
   console.info(`    wallet stat <addr>`);
   console.info(`    wallet sync`);
@@ -448,7 +450,9 @@ async function exportWif(config, wallet, args) {
 
   if (addrInfos.length > 1) {
     console.error();
-    console.error(`'${addrPrefix}' matches the following addresses, pick one:`);
+    console.error(
+      `'${addrPrefix}' matches the following addresses (pick one):`,
+    );
     console.error();
     addrInfos.forEach(
       /** @param {Required<WalletAddress>} addrInfo */
@@ -529,44 +533,257 @@ async function generateWif(config, wallet, args) {
   console.info();
 }
 
+// pay <handle> <coins> send these coins to person x, minus fees
+// pay <handle> <amount> [coins] send this amount to person x,
+//     using ALL coins, and send back the change
 /** @type {Subcommand} */
 async function pay(config, wallet, args) {
   let dryRun = removeFlag(args, ["--dry-run"]);
+  let coinList = removeFlagAndArg(args, ["--coins"]);
 
   // TODO sort between addrs, wifs, and utxos
-  let [handle, DASH] = args;
-  if (!handle) {
+  let [handle, amountOrCoins] = args;
+  let isComplete = handle && amountOrCoins;
+  if (!isComplete) {
     throw Error(
-      `Usage: wallet pay <handle-or-addr> <DASH>\nExample: wallet send @joey 1.0`,
+      [
+        `Usage: wallet pay <handle-or-addr> <amount-or-coins>`,
+        `Example: wallet send @joey 1.0`,
+        `Example: wallet send @joey Xzzz:xx:0,Xyyy:ab:1`,
+        `Example: wallet send @joey 1.0 --coins Xzzz:xx:0,Xyyy:ab:1`,
+      ].join("\n"),
     );
   }
 
-  let hasDecimal = DASH?.split(".").length;
-  let satoshis = Wallet.toDuff(parseFloat(DASH));
-  if (!hasDecimal || !satoshis) {
-    throw Error(
-      `DASH amount must be given in decimal form, such as 1.0 or 0.00100000`,
-    );
+  let satoshis;
+  let isCoin = amountOrCoins.startsWith("X");
+  if (isCoin) {
+    if (coinList?.length) {
+      let err = new Error(
+        `cannot specify '${amountOrCoins}' and --coins '${coinList}'`,
+      );
+      //@ts-ignore
+      err.type = "E_BAD_INPUT";
+      throw err;
+    }
+    coinList = amountOrCoins;
+    satoshis = null;
+  } else {
+    let hasDecimal = amountOrCoins?.split(".").length >= 2;
+    satoshis = Wallet.toDuff(parseFloat(amountOrCoins));
+    if (!hasDecimal || !satoshis) {
+      let err = new Error(
+        `DASH amount must be given in decimal form, such as 1.0 or 0.00100000, not '${amountOrCoins}'`,
+      );
+      //@ts-ignore
+      err.type = "E_BAD_INPUT";
+      throw err;
+    }
   }
 
-  let txHex = await wallet.createTx({ handle, amount: satoshis });
+  let utxos = await coinListToUtxos(wallet, coinList);
 
+  let tx = await wallet.createTx({
+    handle: handle,
+    amount: satoshis,
+    utxos: utxos,
+  });
+
+  console.info();
   if (dryRun) {
-    console.info();
     console.info(
       "Transaction Hex: (inspect at https://live.blockcypher.com/dash/decodetx/)",
     );
-    console.info(txHex);
+    console.info(tx.hex);
+  } else {
+    let txResult = await config.dashsight.instantSend(tx.hex);
+    console.info("Sent!");
     console.info();
-    return;
+    console.info(`https://insight.dash.org/tx/${txResult.body.txid}`);
+  }
+  console.info();
+
+  let wutxos = tx.utxos.map(
+    /**
+     * @param {CoreUtxo} utxo
+     * @return {WalletUtxo} utxo
+     */
+    function (utxo) {
+      let walletName = config.safe.cache.addresses[utxo.address].wallet;
+      return Object.assign({ wallet: walletName }, utxo);
+    },
+  );
+
+  wutxos.sort(
+    /** @type {CoinSorter} */
+    function (a, b) {
+      let result = 0;
+      ["amount", "wallet", "addr"].some(function (sortBy) {
+        if (!coinSorters[sortBy]) {
+          throw new Error(`unrecognized sort '${sortBy}'`);
+        }
+
+        //@ts-ignore - TODO
+        result = coinSorters[sortBy](sortatizeUtxo(a), sortatizeUtxo(b));
+        return result;
+      });
+      return result;
+    },
+  );
+
+  let maxLen = Wallet.toDash(wutxos[0].satoshis).toFixed(8).length;
+  //let amountLabel = "Amount".padStart(maxLen, " ");
+
+  console.info(`Coin inputs (utxos):`);
+
+  //console.info(`    ${amountLabel}  Coin (Addr:Tx:Out)  Wallet`);
+  wutxos.forEach(
+    /** @param {WalletUtxo} utxo */
+    function (utxo) {
+      let dashAmount = Wallet.toDash(utxo.satoshis)
+        .toFixed(8)
+        .padStart(maxLen, " ");
+      let coin = utxoToCoin(utxo.address, utxo);
+
+      console.info(
+        `                         ${dashAmount}  ${coin}  ${utxo.wallet}`,
+      );
+    },
+  );
+  let balanceAmount = Wallet.toDash(tx.balance)
+    .toFixed(8)
+    .padStart(maxLen, " ");
+  console.info(`                         ${balanceAmount}  (total)`);
+
+  console.info();
+
+  let sentAmount = Wallet.toDash(tx.amount).toFixed(8).padStart(maxLen, " ");
+  console.info(`Paid to Recipient:       ${sentAmount}  (${handle})`);
+
+  let feeAmount = Wallet.toDash(tx.fee).toFixed(8).padStart(maxLen, " ");
+  console.info(`Network Fee:             ${feeAmount}`);
+
+  let changeAmount = Wallet.toDash(tx.change).toFixed(8).padStart(maxLen, " ");
+  console.info(`Change:                  ${changeAmount}`);
+}
+
+/**
+ * @param {WalletInstance} wallet
+ * @param {String?} coinList
+ * @returns {Promise<Array<CoreUtxo>?>}
+ */
+async function coinListToUtxos(wallet, coinList) {
+  if (null === coinList) {
+    return null;
   }
 
-  let txResult = await config.dashsight.instantSend(txHex);
-  console.info();
-  console.info("Sent!");
-  console.info();
-  console.info(`https://insight.dash.org/tx/${txResult.body.txid}`);
-  console.info();
+  // '' => []
+  // 'a,b c,,  d' => ['a', 'b', 'c', 'd']
+  let coins = coinList.split(/[\s,]+/).filter(Boolean);
+
+  /** @type {Array<CoreUtxo>} utxos */
+  let utxos = [];
+  /** @type {Object.<String, Boolean>} dups */
+  let dups = {};
+
+  await coins.reduce(async function (promise, coin) {
+    await promise;
+
+    // 'Xaddr1'
+    // 'Xaddr2:tx:0'
+    let [addrPre, txPre, voutStr] = coin.split(":");
+    let addrUtxos = await mustGetAddrUtxos(wallet, addrPre);
+
+    if (!txPre) {
+      addrUtxos.forEach(
+        /** @param {CoreUtxo} utxo */
+        function addUtxo(utxo) {
+          let dupId = `${utxo.address}:${utxo.txId}:${utxo.outputIndex}`;
+          if (dups[dupId]) {
+            return;
+          }
+
+          dups[dupId] = true;
+
+          utxos.push(utxo);
+        },
+      );
+      return;
+    }
+
+    let utxo = addrUtxos.find(
+      /** @param {CoreUtxo} utxo */
+      function byMatchingCoin(utxo) {
+        let dupId = `${utxo.address}:${utxo.txId}:${utxo.outputIndex}`;
+        if (dups[dupId]) {
+          return false;
+        }
+
+        if (!utxo.txId.startsWith(txPre)) {
+          // TODO how to ensure no short 'txPre's?
+          return false;
+        }
+
+        let vout = parseFloat(voutStr);
+        if (vout !== utxo.outputIndex) {
+          return false;
+        }
+
+        dups[dupId] = true;
+        return true;
+      },
+    );
+    if (!utxo) {
+      throw new Error(`no coin matches '${coin}'`);
+    }
+
+    utxos.push(utxo);
+  }, Promise.resolve());
+
+  return utxos;
+}
+
+/**
+ * @param {WalletInstance} wallet
+ * @param {String} addrPrefix
+ */
+async function mustGetAddrUtxos(wallet, addrPrefix) {
+  let addrInfos = await wallet.findAddrs(addrPrefix);
+  if (!addrInfos.length) {
+    let errMsg = `'${addrPrefix}' did not matches any address in any wallets`;
+    let err = Error(errMsg);
+    //@ts-ignore
+    err.type = "E_BAD_INPUT";
+    throw err;
+  }
+
+  if (addrInfos.length > 1) {
+    let errLines = [
+      `'${addrPrefix}' matches the following addresses (pick one):`,
+    ];
+    errLines.push("");
+    addrInfos.forEach(
+      /** @param {Required<WalletAddress>} addrInfo */
+      function (addrInfo) {
+        errLines.push(`    ${addrInfo.addr}`);
+      },
+    );
+
+    let err = new Error(errLines.join("\n"));
+    //@ts-ignore
+    err.type = "E_BAD_INPUT";
+    throw err;
+  }
+
+  let addrInfo = addrInfos[0];
+  let utxos = addrInfo.utxos.map(
+    /** @param {MiniUtxo} utxo */
+    function (utxo) {
+      return Object.assign({ address: addrInfo.addr }, utxo);
+    },
+  );
+
+  return utxos;
 }
 
 /** @type {Subcommand} */
@@ -654,16 +871,6 @@ async function listCoins(config, wallet, args) {
     return;
   }
 
-  /** @param {WalletUtxo} utxo */
-  function sortatizeUtxo(utxo) {
-    return Object.assign({}, utxo, {
-      wallet: utxo.wallet
-        .toLowerCase()
-        // make contacts sort lower
-        .replace(/^@/, "|"),
-    });
-  }
-
   let utxos = _utxos.map(
     /** @param {CoreUtxo} utxo */
     function (utxo) {
@@ -730,6 +937,28 @@ async function listCoins(config, wallet, args) {
   );
 }
 
+/** @param {WalletUtxo} utxo */
+function sortatizeUtxo(utxo) {
+  return Object.assign({}, utxo, {
+    wallet: utxo.wallet
+      .toLowerCase()
+      // make contacts sort lower
+      .replace(/^@/, "|"),
+  });
+}
+
+/**
+ * @param {String} addr
+ * @param {MiniUtxo} utxo
+ * @returns {String} - `${addrId}:${txId}:${utxo.outputIndex}` (18 chars)
+ */
+function utxoToCoin(addr, utxo) {
+  let addrId = addr.slice(0, 9);
+  let txId = utxo.txId.slice(0, 6);
+
+  return `${addrId}:${txId}:${utxo.outputIndex}`;
+}
+
 /** @type {Subcommand} */
 async function stat(config, wallet, args) {
   let [addrPrefix] = args;
@@ -746,17 +975,21 @@ async function stat(config, wallet, args) {
   }
 
   if (addrInfos.length > 1) {
-    console.error();
-    console.error(`'${addrPrefix}' matches the following addresses:`);
-    console.error();
+    let errLines = [
+      `'${addrPrefix}' matches the following addresses (pick one):`,
+    ];
+    errLines.push("");
     addrInfos.forEach(
       /** @param {Required<WalletAddress>} addrInfo */
       function (addrInfo) {
-        console.error(`    ${addrInfo.addr}`);
+        errLines.push(`    ${addrInfo.addr}`);
       },
     );
-    console.error();
-    process.exit(1);
+
+    let err = new Error(errLines.join("\n"));
+    //@ts-ignore
+    err.type = "E_BAD_INPUT";
+    throw err;
   }
 
   let addrs = addrInfos.map(
@@ -902,6 +1135,15 @@ main()
     process.exit(0);
   })
   .catch(function (err) {
+    if ("E_BAD_INPUT" === err.type) {
+      console.error("Error:");
+      console.error();
+      console.error(err.message);
+      console.error();
+      process.exit(1);
+      return;
+    }
+
     console.error("Fail:");
     console.error(err.stack || err);
     if (err.failedTx) {

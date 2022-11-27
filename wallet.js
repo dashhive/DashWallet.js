@@ -604,32 +604,49 @@
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} opts.amount - duffs/satoshis
+     * @param {Array<CoreUtxo>?} [opts.utxos]
      */
-    wallet.pay = async function ({ handle, amount }) {
-      let txHex = await wallet.createTx({ handle, amount });
+    wallet.pay = async function ({ handle, amount, utxos }) {
+      let tx = await wallet.createTx({ handle, amount, utxos });
 
-      let result = await dashsight.instantSend(txHex).catch(
+      let result = await dashsight.instantSend(tx.hex).catch(
         /** @param {Error} err */
         function (err) {
           //@ts-ignore
-          err.failedTx = txHex;
+          err.failedTx = tx.hex;
+          //@ts-ignore
+          err.failedUtxos = tx.utxos;
           throw err;
         },
       );
-      return result;
+
+      return Object.assign({ response: result }, tx);
     };
 
     /**
      * @param {Object} opts
      * @param {String} opts.handle
-     * @param {Number} opts.amount - duffs/satoshis
-     * @param {Array<CoreUtxo>} [opts.utxos]
+     * @param {Number?} opts.amount - duffs/satoshis
+     * @param {Array<CoreUtxo>?} [opts.utxos]
      */
-    wallet.createTx = async function ({ handle, amount, utxos = [] }) {
+    wallet.createTx = async function ({ handle, amount, utxos }) {
       let nextPayAddr = "";
       let isPayAddr = _isPayAddr(handle);
       if (isPayAddr) {
         nextPayAddr = handle;
+      }
+
+      let lessFees = false;
+      if (!amount) {
+        if (!utxos?.length) {
+          throw new Error(
+            `amount must be a positive number unless 'utxos' are specified`,
+          );
+        }
+        lessFees = true;
+        amount = utxos.reduce(function (total, utxo) {
+          return total + utxo.satoshis;
+        }, 0);
       }
 
       {
@@ -661,28 +678,41 @@
         }
       }
 
-      // TODO make more accurate? How many bytes per additional utxo? signature?
       let feePreEstimate = 1000;
-      let allUtxos = utxos;
-      if (!utxos.length) {
+      let balance;
+      let allUtxos;
+      if (utxos) {
+        allUtxos = utxos;
+        balance = DashApi.getBalance(utxos);
+      } else {
+        // TODO make more accurate? How many bytes per additional utxo? signature?
         allUtxos = await wallet.utxos();
         utxos = await DashApi.getOptimalUtxos(
           allUtxos,
           amount + feePreEstimate,
         );
-        // TODO check utxos are available
-        // (or preferably fail and retry)
+
+        balance = DashApi.getBalance(utxos);
+
+        if (!utxos.length) {
+          let totalBalance = DashApi.getBalance(allUtxos);
+          let dashBalance = DashApi.toDash(totalBalance);
+          let dashAmount = DashApi.toDash(amount);
+          throw new Error(
+            `insufficient funds: cannot pay ${dashAmount} (+fees) with ${dashBalance}`,
+          );
+        }
+
+        // (estimate) don't send dust back as change
+        if (balance - amount <= DashApi.DUST + DashApi.FEE) {
+          // TODO see note about Dash Direct
+          // amount = balance;
+          feePreEstimate = balance - amount;
+        }
       }
 
-      let balance = DashApi.getBalance(utxos);
-      if (!utxos.length) {
-        let totalBalance = DashApi.getBalance(allUtxos);
-        let dashBalance = DashApi.toDash(totalBalance);
-        let dashAmount = DashApi.toDash(amount);
-        throw new Error(
-          `insufficient funds: cannot pay ${dashAmount} (+fees) with ${dashBalance}`,
-        );
-      }
+      // TODO check utxos are available
+      // (or preferably fail and retry)
 
       let wifs = await wallet._utxosToWifs(utxos);
       if (!wifs.length) {
@@ -691,16 +721,16 @@
         );
       }
 
-      // (estimate) don't send dust back as change
-      if (balance - amount <= DashApi.DUST + DashApi.FEE) {
-        amount = balance;
+      let payAmount = amount;
+      if (lessFees) {
+        payAmount = amount - feePreEstimate;
       }
 
       //@ts-ignore - no input required, actually
       let tmpTx = new Transaction()
         //@ts-ignore - allows single value or array
         .from(utxos);
-      tmpTx.to(nextPayAddr, amount);
+      tmpTx.to(nextPayAddr, payAmount);
       //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
       let changeAddr = await wallet._nextWalletAddr({
         handle: "main",
@@ -715,25 +745,39 @@
       //       +10 to be safe (the tmpTx may be a few bytes off - probably only 4 -
       //       due to how small numbers are encoded)
       let fee = 10 + tmpTx.toString().length / 2;
+      if (lessFees) {
+        payAmount = amount - fee;
+      }
 
       // (adjusted) don't send dust back as change
-      if (balance + -amount + -fee <= DashApi.DUST) {
-        amount = balance - fee;
+      if (balance + -payAmount + -fee <= DashApi.DUST) {
+        //payAmount = balance - fee;
+
+        // Dash Direct requires exact amounts, I believe
+        // TODO double check
+        fee = balance - payAmount;
       }
 
       //@ts-ignore - no input required, actually
       let tx = new Transaction()
         //@ts-ignore - allows single value or array
         .from(utxos);
-      tx.to(nextPayAddr, amount);
+      tx.to(nextPayAddr, payAmount);
       tx.fee(fee);
       //@ts-ignore - see above
       tx.change(changeAddr);
       tx.sign(wifs);
 
       let txHex = tx.serialize();
-      // TODO: MUST return used UTXOS!!
-      return txHex;
+
+      return {
+        hex: txHex,
+        utxos: utxos,
+        balance: balance,
+        amount: payAmount,
+        fee: fee,
+        change: balance - (payAmount + fee),
+      };
     };
 
     /**
