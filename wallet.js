@@ -687,7 +687,7 @@
         }, 0);
       }
 
-      {
+      if (!nextPayAddr) {
         let payWallets = await wallet.findPayWallets({ handle });
         let payWallet = payWallets[0];
         if (!payWallet) {
