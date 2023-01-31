@@ -9,6 +9,7 @@
   let Bip39 = require("bip39");
   //let Passphrase = require("@root/passphrase");
   let DashApi = require("./dashapi.js");
+  let RIPEMD160 = require("ripemd160");
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
@@ -500,6 +501,34 @@
      * @returns {Promise<String>} - pay address
      */
     wallet._nextWalletAddr = async function ({ handle, direction }) {
+      let count = 1;
+      let addrsInfo = await wallet._nextWalletAddrs({
+        handle,
+        direction,
+        count,
+      });
+      return addrsInfo.addrs[0];
+    };
+
+    /**
+     * @typedef NextInfo
+     * @prop {Number} start
+     * @prop {String} [addr]
+     * @prop {Array<String>} addrs
+     */
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle - a private wallet name
+     * @param {Number} opts.direction - 0 for deposit, 1 for change
+     * @param {Number} opts.count - how many next addresses
+     * @returns {Promise<NextInfo>} - info about next addresses
+     */
+    wallet._nextWalletAddrs = async function ({
+      handle,
+      direction,
+      count = 1,
+    }) {
       let ws = await wallet.findPrivateWallets({ handle });
       let w = ws[0] || safe.privateWallets.main;
 
@@ -523,7 +552,13 @@
       let nextIndex = await indexPayAddrs(w.name, derivedRoot, hdpath, now);
       await config.store.save(safe.cache);
 
-      return await wallet._getAddr({ derivedRoot, index: nextIndex });
+      let addrs = [];
+      for (let i = 0; i < count; i += 1) {
+        let index = nextIndex + i;
+        let addr = await wallet._getAddr({ derivedRoot, index });
+        addrs.push(addr);
+      }
+      return { start: nextIndex, addr: addrs[0], addrs: addrs };
     };
 
     /**
@@ -557,8 +592,9 @@
     /**
      * @param {Object} opts
      * @param {String} opts.handle
+     * @param {Number} opts.count
      */
-    wallet.createNextReceiveAddr = async function ({ handle }) {
+    wallet.createNextReceiveAddr = async function ({ handle, count = 1 }) {
       let ws = await wallet.findPrivateWallets({ handle });
       let privateWallet = ws[0];
 
@@ -568,16 +604,14 @@
       }
 
       // TODO get back NextIndex
-      let receiveAddr = await wallet._nextWalletAddr({
+      let receiveAddrsInfo = await wallet._nextWalletAddrs({
         handle: handle,
         direction: 0,
+        count: count,
       });
       await config.store.save(safe.cache);
 
-      return {
-        addr: receiveAddr,
-        //index: nextIndex,
-      };
+      return receiveAddrsInfo;
     };
 
     /**
@@ -591,7 +625,6 @@
       let derivedChild = derivedRoot.deriveChild(index);
 
       let nextPayAddr = await b58c.encode({
-        version: DashApi.DashTypes.pubKeyHashVersion,
         pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
         compressed: true,
       });
@@ -708,7 +741,6 @@
           //@ts-ignore - tsc bug
           let derivedChild = derivedRoot.deriveChild(nextIndex);
           nextPayAddr = await b58c.encode({
-            version: DashApi.DashTypes.pubKeyHashVersion,
             pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
             compressed: true,
           });
@@ -779,9 +811,8 @@
 
       // TODO getsmartfeeestimate??
       // fee = 1duff/byte (2 chars hex is 1 byte)
-      //       +10 to be safe (the tmpTx may be a few bytes off - probably only 4 -
-      //       due to how small numbers are encoded)
-      let fee = 10 + tmpTx.toString().length / 2;
+      //       +2 to be safe (there's a possibility of an extra BigInt padding byte on 3 byte sequences)
+      let fee = 2 + tmpTx.toString().length / 2;
       if (lessFees) {
         payAmount = amount - fee;
       }
@@ -794,6 +825,13 @@
         // TODO double check
         fee = balance - payAmount;
       }
+
+      //console.log("DEBUG tx");
+      //console.log(JSON.stringify(utxos, null, 2));
+      //console.log("Pay Addr", nextPayAddr);
+      //console.log("Amount", payAmount);
+      //console.log("Fee", fee);
+      //console.log("Change Addr", changeAddr.slice(0, 4));
 
       //@ts-ignore - no input required, actually
       let tx = new Transaction()
@@ -932,7 +970,6 @@
       let derivedChild = derivedRoot.deriveChild(addrInfo.index);
 
       let address = await b58c.encode({
-        version: DashApi.DashTypes.pubKeyHashVersion,
         pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
         compressed: true,
       });
@@ -942,8 +979,7 @@
         );
       }
       let wif = await b58c.encode({
-        version: DashApi.DashTypes.privateKeyVersion,
-        pubKeyHash: derivedChild.privateKey.toString("hex"),
+        privateKey: derivedChild.privateKey.toString("hex"),
         compressed: true,
       });
 
@@ -1168,7 +1204,6 @@
         //@ts-ignore
         let derivedChild = derivedRoot.deriveChild(index);
         let addr = await b58c.encode({
-          version: DashApi.DashTypes.pubKeyHashVersion,
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });
@@ -1196,7 +1231,6 @@
         //@ts-ignore
         let derivedChild = derivedRoot.deriveChild(index);
         let addr = await b58c.encode({
-          version: DashApi.DashTypes.pubKeyHashVersion,
           pubKeyHash: derivedChild.pubKeyHash.toString("hex"),
           compressed: true,
         });

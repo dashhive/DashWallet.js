@@ -339,8 +339,23 @@ async function befriend(config, wallet, args) {
   // TODO QR
   console.info(rxXPub);
   console.info();
-  let rxAddr = await wallet.createNextReceiveAddr({ handle });
-  console.info(`(next address is '${rxAddr.addr}')`);
+  let count = 3;
+  let rxAddr = await wallet.createNextReceiveAddr({ handle, count });
+  if (count === 1) {
+    console.info(`(next address is '${rxAddr.addr}')`);
+    return;
+  }
+  console.info(`Next addresses:`);
+  rxAddr.addrs.forEach(
+    /**
+     * @param {String} addr
+     * @param {Number} i
+     */
+    function (addr, i) {
+      let index = i + rxAddr.start;
+      console.info(`    ${addr} (${index})`);
+    },
+  );
 }
 
 /** @type {Subcommand} */
@@ -513,8 +528,7 @@ async function generateWif(config, wallet, args) {
   }
 
   let wif = await b58c.encode({
-    version: Wallet.DashTypes.privateKeyVersion,
-    pubKeyHash: privKey.toString("hex"),
+    privateKey: privKey.toString("hex"),
     compressed: true,
   });
 
@@ -651,6 +665,7 @@ async function pay(config, wallet, args) {
   let balanceAmount = Wallet.toDash(tx.balance)
     .toFixed(8)
     .padStart(maxLen, " ");
+  console.info(`                       -------------`);
   console.info(`                         ${balanceAmount}  (total)`);
 
   console.info();
@@ -664,19 +679,21 @@ async function pay(config, wallet, args) {
   let changeAmount = Wallet.toDash(tx.change).toFixed(8).padStart(maxLen, " ");
   console.info(`Change:                  ${changeAmount}`);
 
-  // TODO move to sendTx
-  let now = Date.now();
-  await wallet._spendUtxos({
-    utxos: tx.utxos,
-    now: now,
-  });
-  await wallet._updateAddrInfo(tx._changeAddr, now, 0);
+  if (!dryRun) {
+    // TODO move to sendTx
+    let now = Date.now();
+    await wallet._spendUtxos({
+      utxos: tx.utxos,
+      now: now,
+    });
+    await wallet._updateAddrInfo(tx._changeAddr, now, 0);
 
-  // TODO pre-sync with return info
-  config.safe.cache.addresses[tx._changeAddr].sync_at = now + 3000;
-  let recipAddrInfo = config.safe.cache.addresses[tx._recipientAddr];
-  if (recipAddrInfo) {
-    recipAddrInfo.sync_at = now + 3000;
+    // TODO pre-sync with return info
+    config.safe.cache.addresses[tx._changeAddr].sync_at = now + 3000;
+    let recipAddrInfo = config.safe.cache.addresses[tx._recipientAddr];
+    if (recipAddrInfo) {
+      recipAddrInfo.sync_at = now + 3000;
+    }
   }
 
   await config.store.save(config.safe.cache);
