@@ -6,15 +6,104 @@
   exports.Wallet = Wallet;
 
   let DashHd = require("dashhd");
+  let DashKeys = require("dashkeys");
   let DashPhrase = require("dashphrase");
-  let DashApi = require("./dashapi.js");
-  let COIN_TYPE = 5;
+  let DashApi = {};
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
   /** @typedef {import('dashsight').GetUtxos} GetUtxos */
   /** @typedef {import('dashsight').InstantSend} InstantSend */
   /** @typedef {import('dashsight').InsightUtxo} InsightUtxo */
+
+  const DUFFS = 100000000;
+  const DUST = 10000;
+  const FEE = 1000;
+  DashApi.DUFFS = DUFFS;
+
+  DashApi.DashTypes = {
+    name: "dash",
+    pubKeyHashVersion: "4c",
+    privateKeyVersion: "cc",
+    coinType: "5",
+  };
+
+  DashApi.DUST = DUST;
+  DashApi.FEE = FEE;
+
+  /**
+   * @template {Pick<CoreUtxo, "satoshis">} T
+   * @param {Array<T>} utxos
+   * @param {Number} fullAmount - including fee estimate
+   * @return {Array<T>}
+   */
+  DashApi.getOptimalUtxos = function (utxos, fullAmount) {
+    let balance = DashApi.getBalance(utxos);
+
+    if (balance < fullAmount) {
+      return [];
+    }
+
+    // from largest to smallest
+    utxos.sort(function (a, b) {
+      return b.satoshis - a.satoshis;
+    });
+
+    /** @type Array<T> */
+    let included = [];
+    let total = 0;
+
+    // try to get just one
+    utxos.every(function (utxo) {
+      if (utxo.satoshis > fullAmount) {
+        included[0] = utxo;
+        total = utxo.satoshis;
+        return true;
+      }
+      return false;
+    });
+    if (total) {
+      return included;
+    }
+
+    // try to use as few coins as possible
+    utxos.some(function (utxo) {
+      included.push(utxo);
+      total += utxo.satoshis;
+      return total >= fullAmount;
+    });
+    return included;
+  };
+
+  /**
+   * @template {Pick<CoreUtxo, "satoshis">} T
+   * @param {Array<T>} utxos
+   * @returns {Number}
+   */
+  DashApi.getBalance = function (utxos) {
+    return utxos.reduce(function (total, utxo) {
+      return total + utxo.satoshis;
+    }, 0);
+  };
+
+  /**
+   * @param {Number} dash - as DASH (not duffs / satoshis)
+   * @returns {Number} - duffs
+   */
+  DashApi.toDuff = function (dash) {
+    return Math.round(dash * DUFFS);
+  };
+
+  /**
+   * @param {Number} duffs - DASH sastoshis
+   * @returns {Number} - float
+   */
+  DashApi.toDash = function (duffs) {
+    let floatBalance = parseFloat((duffs / DUFFS).toFixed(8));
+    return floatBalance;
+  };
+
+  let COIN_TYPE = 5;
 
   //@ts-ignore
   let Dashcore = exports.dashcore || require("./lib/dashcore.js");
@@ -345,7 +434,8 @@
       await wifs.reduce(async function (promise, wif) {
         await promise;
 
-        let addr = await DashApi.wifToAddr(wif);
+        //@ts-ignore bad export
+        let addr = await DashKeys.wifToAddr(wif);
         let addrInfo = safe.cache.addresses[addr];
 
         await indexWifAddr(addr, now, staletime);

@@ -24,7 +24,6 @@ let pkg = require("../package.json");
 let Path = require("node:path");
 let Fs = require("node:fs/promises");
 
-let Crypto = require("node:crypto");
 let Os = require("node:os");
 
 let envSuffix = "";
@@ -38,9 +37,8 @@ let home = Os.homedir();
 let Wallet = require("../wallet.js");
 let Cli = require("./_cli.js");
 
-let b58c = require("../lib/dashcheck.js");
+let DashKeys = require("dashkeys");
 let Dashsight = require("dashsight");
-let Secp256k1 = require("secp256k1");
 // let Qr = require("./qr.js");
 
 /**
@@ -573,19 +571,15 @@ async function exportWif(config, wallet, args) {
 
 /** @type {Subcommand} */
 async function generateWif(config, wallet, args) {
-  let privKey;
-  for (;;) {
-    // TODO browser
-    privKey = Crypto.randomBytes(32);
-    if (Secp256k1.privateKeyVerify(privKey)) {
-      break;
-    }
-  }
+  let Secp256k1 =
+    //@ts-ignore
+    /*Window.nobleSecp256k1 ||*/ require("@dashincubator/secp256k1");
 
-  let wif = await b58c.encode({
-    privateKey: privKey.toString("hex"),
-    compressed: true,
-  });
+  let privBytes = Secp256k1.utils.randomPrivateKey();
+  await verifyPrivateKey(privBytes);
+
+  //@ts-ignore - TODO what's up with the typing here?
+  let wif = await DashKeys.privKeyToWif(privBytes);
 
   // TODO --no-import
   // TODO --offline (we don't need to check txs on what we just generated)
@@ -597,6 +591,16 @@ async function generateWif(config, wallet, args) {
   console.info();
   console.info(`    ${addrInfo.addr}`);
   console.info();
+}
+
+/**
+ * @param {Uint8Array} privBytes
+ * @throws {Error}
+ */
+async function verifyPrivateKey(privBytes) {
+  // if it can generate a valid public key, it's a private key
+  //@ts-ignore - TODO why isn't utils recognized?
+  await DashKeys.utils.toPublicKey(privBytes);
 }
 
 // pay <handle> <coins> send these coins to person x, minus fees
