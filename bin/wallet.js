@@ -43,6 +43,8 @@ let Dashsight = require("dashsight");
 let Secp256k1 = require("secp256k1");
 // let Qr = require("./qr.js");
 
+let colorize = require("@pinojs/json-colorizer");
+
 /**
  * @typedef FsStoreConfig
  * @prop {String} dir
@@ -64,6 +66,7 @@ let config = { staletime: 5 * 60 * 1000 };
  */
 
 let jsonOut = false;
+let offline = false;
 
 async function main() {
   /* jshint maxcomplexity:1000 */
@@ -88,6 +91,7 @@ async function main() {
   if (envSuffix.length > 0) {
     console.error(`🚜 DASH_ENV=${process.env.DASH_ENV}`);
     console.error(`⚙️ ~/.config/dash${envSuffix}/`);
+    console.error();
   }
 
   require("dotenv").config({ path: `${storeConfig.dir}/env` });
@@ -143,12 +147,12 @@ async function main() {
 
   let version = removeFlag(args, ["version", "-V", "--version"]);
   if (version) {
-    console.info(`dashwallet v${pkg.version}`);
+    showVersion();
     process.exit(0);
     return;
   }
 
-  let friend = removeFlag(args, ["friend"]);
+  let friend = removeFlag(args, ["contact", "friend"]);
   if (friend) {
     await befriend(config, wallet, args);
     return wallet;
@@ -172,7 +176,7 @@ async function main() {
     return wallet;
   }
 
-  let showBalances = removeFlag(args, ["balance", "balances"]);
+  let showBalances = removeFlag(args, ["accounts", "balance", "balances"]);
   if (showBalances) {
     await getBalances(config, wallet, args);
     return null;
@@ -287,30 +291,51 @@ function removeFlagAndArg(arr, aliases) {
   return arg;
 }
 
+let SHORT_VERSION = `dashwallet v${pkg.version} - ${pkg.description}`;
+
+function showVersion() {
+  console.info(SHORT_VERSION);
+  let tuples = Object.entries(pkg.dependencies);
+  for (let [name, version] of tuples) {
+    if (!name.match("dash")) {
+      continue;
+    }
+    console.info(`  ${name} v${version}`);
+  }
+}
+
+let USAGE = [
+  `${SHORT_VERSION}`,
+  ``,
+  `USAGE:`,
+  `    wallet <subcommand> [flags] [options] [--] [args]`,
+  ``,
+  `SUBCOMMANDS:`,
+  `    accounts                           show accounts (and extra wallets)`,
+  `    export <addr> [./dir/ or x.wif]    write private keys to disk`,
+  `    contact <handle> [xpub-or-addr]    add contact or show xpubs & addrs`,
+  `    generate address                   gen and store one-off wif`,
+  `    import <./path/to.wif>             save private keys`,
+  `    coins [--sort wallet,amount,addr]  show all spendable coins`,
+  `    send <handle|pay-addr> <DASH>      send to an address or contact`,
+  `                    [--dry-run] [--coins Xxxxx:xx:0,...]`,
+  // TODO or contact
+  `    remove <addr> [--no-wif]           remove stand-alone key`,
+  `    stat <addr>                        show current coins & balance`,
+  `    sync                               update address caches`,
+  `    version                            show version and exit`,
+  ``,
+  `OPTIONS:`,
+  `    DASH_ENV, -c, --config-name ''     use ~/.config/dash{.suffix}/`,
+  `    --config-dir ~/.config/dash/       change full config path`,
+  `    --json                             output as JSON (if possible)`,
+  //`    --offline                             no sync, cache updates, balance checks, etc`,
+  `    --sync                             wait for sync first`,
+  ``,
+].join("\n");
+
 function usage() {
-  console.info();
-  console.info(`Usage:`);
-  console.info(`    wallet balances`);
-  console.info(`    wallet export <addr> [./dir/ or ./file.wif]`);
-  console.info(`    wallet friend <handle> [xpub-or-static-addr]`);
-  console.info(`    wallet generate address`);
-  console.info(`    wallet import <./path/to.wif>`);
-  console.info(`    wallet list [--sort wallet,amount,addr] [--json]`);
-  console.info(
-    `    wallet pay <handle|pay-addr> <DASH> [--dry-run] [--coins Xxxxx:xx:0,...]`,
-  );
-  console.info(`    wallet remove <addr> [--no-wif]`);
-  console.info(`    wallet stat <addr>`);
-  console.info(`    wallet sync`);
-  console.info(`    wallet version`);
-  console.info();
-  console.info(`Global Options:`);
-  console.info(`    -c, --config-name ''          add suffix to config dir name (also DASH_ENV)`);
-  console.info(`    --config-dir ~/.config/dash/  change full config path`);
-  // TODO set staletime = Infinity for --offline?
-  //console.info(`    --offline # skip update checks`);
-  console.info(`    --sync                        wait for sync first`);
-  console.info();
+  console.info(USAGE);
 }
 
 /** @type {Subcommand} */
@@ -1019,10 +1044,33 @@ async function stat(config, wallet, args) {
 
   let addrInfos = await wallet.findAddrs(addrPrefix);
   if (!addrInfos.length) {
-    console.error();
-    console.error(`'${addrPrefix}' did not matches any address in any wallets`);
-    console.error();
-    process.exit(1);
+    let searchable = !offline && addrPrefix.length === 34;
+    if (!searchable) {
+      console.error();
+      console.error(`'${addrPrefix}' did not match any address in any wallets`);
+      console.error();
+      process.exit(1);
+      return;
+    }
+
+    let utxos = await config.dashsight.getCoreUtxos(addrPrefix);
+    if (jsonOut) {
+      let json = JSON.stringify(utxos, null, 2);
+      if (process.stdout.isTTY) {
+        json = colorize(json);
+      }
+      console.info(json);
+      return;
+    }
+    addrInfos = [
+      {
+        wallet: "(not imported)",
+        hdpath: "-",
+        index: "-",
+        addr: addrPrefix,
+        utxos: utxos,
+      },
+    ];
   }
 
   if (addrInfos.length > 1) {
@@ -1043,33 +1091,35 @@ async function stat(config, wallet, args) {
     throw err;
   }
 
-  let addrs = addrInfos.map(
-    /** @param {Required<WalletAddress>} addrInfo */
-    function (addrInfo) {
-      return addrInfo.addr;
-    },
-  );
-  addrInfos = await wallet.stat({ addrs: addrs });
+  if (!addrInfos[0].utxos) {
+    let addrs = addrInfos.map(
+      /** @param {Required<WalletAddress>} addrInfo */
+      function (addrInfo) {
+        return addrInfo.addr;
+      },
+    );
+    addrInfos = await wallet.stat({ addrs: addrs });
+  }
 
-  addrInfos.forEach(
-    /** @param {WalletAddress} addrInfo */
-    function (addrInfo) {
-      // TODO timestamp
-      let totalBalance = Wallet.getBalance(addrInfo.utxos);
-      let dashBalance = Wallet.toDash(totalBalance).toFixed(8);
-      console.info(
-        `${addrInfo.addr} (${dashBalance}) - ${addrInfo.wallet}:${addrInfo.hdpath}/${addrInfo.index}`,
+  addrInfos.forEach(printAddrInfo);
+
+  /** @param {WalletAddress} addrInfo */
+  function printAddrInfo(addrInfo) {
+    // TODO timestamp
+    let totalBalance = Wallet.getBalance(addrInfo.utxos);
+    let dashBalance = Wallet.toDash(totalBalance).toFixed(8);
+    console.info(
+      `${addrInfo.addr} (${dashBalance}) - ${addrInfo.wallet}:${addrInfo.hdpath}/${addrInfo.index}`,
+    );
+    if (addrInfo.utxos.length > 1) {
+      addrInfo.utxos.forEach(
+        /** @param {MiniUtxo} utxo */
+        function (utxo) {
+          console.info(`    ${utxo.satoshis}`);
+        },
       );
-      if (addrInfo.utxos.length > 1) {
-        addrInfo.utxos.forEach(
-          /** @param {MiniUtxo} utxo */
-          function (utxo) {
-            console.info(`    ${utxo.satoshis}`);
-          },
-        );
-      }
-    },
-  );
+    }
+  }
 }
 
 let Storage = {}; //jshint ignore:line

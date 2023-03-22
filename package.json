@@ -38,6 +38,7 @@
   "homepage": "https://github.com/dashhive/wallet.js#readme",
   "dependencies": {
     "@dashevo/dashcore-lib": "^0.19.44",
+    "@pinojs/json-colorizer": "^3.0.0",
     "@root/base58check": "^1.0.1",
     "@root/passphrase": "^1.1.0",
     "bip39": "^3.0.4",

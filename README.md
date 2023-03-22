@@ -3,30 +3,47 @@
 A more civilized wallet for a less civilized age...
 
 ```sh
-wallet pay @johndoe 1.0
+wallet send @johndoe 1.0
 ```
 
 ```txt
 Sent Đ1.0 to @johndoe!
 ```
 
-# Alpha CLI (may change)
+# CLI (not version-locked)
 
 ```txt
-Usage:
-    wallet friend <handle> [xpub-or-addr]
-    wallet pay <handle|pay-addr> <DASH> [--dry-run]
-    wallet balances
-    wallet sync
+dashwallet v0.2.1 - A more civilized wallet for a less civilized age
 
-Global Options:
-    --config-dir ~/.config/dash/
+USAGE:
+    wallet <subcommand> [flags] [options] [--] [args]
+
+SUBCOMMANDS:
+    accounts                           show accounts (and extra wallets)
+    export <addr> [./dir/ or x.wif]    write private keys to disk
+    contact <handle> [xpub-or-addr]    add contact or show xpubs & addrs
+    generate address                   gen and store one-off wif
+    import <./path/to.wif>             save private keys
+    coins [--sort wallet,amount,addr]  show all spendable coins
+    send <handle|pay-addr> <DASH>      send to an address or contact
+                    [--dry-run] [--coins Xxxxx:xx:0,...]
+    remove <addr> [--no-wif]           remove stand-alone key
+    stat <addr>                        show current coins & balance
+    sync                               update address caches
+    version                            show version and exit
+
+OPTIONS:
+    DASH_ENV, -c, --config-name ''     use ~/.config/dash{.suffix}/
+    --config-dir ~/.config/dash/       change full config path
+    --json                             output as JSON (if possible)
+    --sync                             wait for sync first
 ```
 
 ## Examples
 
 ```sh
-wallet friend <handle> [xpub-or-addr]
+# wallet contact <handle> [xpub-or-addr]
+wallet contact @kraken 'Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 ```
 
 ```txt
@@ -41,7 +58,7 @@ xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 # Wallet.create(config)
 
-Creates a wallet instance with the given
+Creates a wallet instance with the given config
 
 - [DashSight](https://github.com/dashhive/dashsight.js) adapter - or any
   interface matching:
