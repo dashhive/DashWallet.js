@@ -152,7 +152,7 @@ async function main() {
     return;
   }
 
-  let friend = removeFlag(args, ["contact", "friend"]);
+  let friend = removeFlag(args, ["connect", "contact", "friend"]);
   if (friend) {
     await befriend(config, wallet, args);
     return wallet;
