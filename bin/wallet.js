@@ -1216,8 +1216,8 @@ Storage.create = function (storeConfig, config) {
 /**
  * Safely replacing a file by renaming the original as a .bak before replacement
  * @param {String} filepath
- * @param {String|ArrayBuffer} contents
- * @param {String?} enc
+ * @param {String|Uint8Array|Buffer} contents
+ * @param {BufferEncoding?} [enc]
  */
 async function safeReplace(filepath, contents, enc = null) {
   await Fs.writeFile(`${filepath}.tmp`, contents, enc);
