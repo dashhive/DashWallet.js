@@ -347,7 +347,8 @@ async function befriend(config, wallet, args) {
 
   let xpub = "";
   let addr = "";
-  if (Wallet.isXPub(xpubOrAddr)) {
+  let isXPub = await Wallet.isXPub(xpubOrAddr);
+  if (isXPub) {
     xpub = xpubOrAddr;
   } else {
     addr = xpubOrAddr;
