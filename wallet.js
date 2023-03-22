@@ -577,7 +577,7 @@
         };
       }
 
-      let xpubKey = DashHd.fromXKey(payWallet.xpub);
+      let xpubKey = await DashHd.fromXKey(payWallet.xpub);
 
       let now = Date.now();
       let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
