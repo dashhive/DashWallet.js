@@ -307,7 +307,7 @@
         }
 
         if ("*" === addrInfo.hdpath) {
-          // ignore
+          // ignore wifs
         }
 
         let b = addrInfo.utxos.reduce(
@@ -396,7 +396,7 @@
         }
 
         if ("*" === addrInfo.hdpath) {
-          // ignore
+          // ignore wifs
         }
 
         addrInfo.utxos.forEach(
@@ -1056,6 +1056,13 @@
         w,
       ) {
         await promise;
+
+        if (w.wifs) {
+          for (let wifInfo of w.wifs) {
+            await indexWifAddr(wifInfo.addr, now, staletime);
+          }
+          await config.store.save(safe.privateWallets);
+        }
 
         let mnemonic = w.mnemonic.join(" ");
         // TODO use derivation from main for non-imported wallets
