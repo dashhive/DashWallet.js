@@ -21,17 +21,22 @@ let pkg = require("../package.json");
  * @prop {String} wallet
  */
 
-let Crypto = require("node:crypto");
-let Os = require("node:os");
-let home = Os.homedir();
-
-require("dotenv").config({ path: `${home}/.config/dash/env` });
-require("dotenv").config({ path: `${home}/.config/dash/.env.secret` });
-
 let Path = require("node:path");
 let Fs = require("node:fs/promises");
 
+let Crypto = require("node:crypto");
+let Os = require("node:os");
+
+let envSuffix = "";
+require("dotenv").config({ path: Path.join(__dirname, "../.env") });
+if (process.env.DASH_ENV) {
+  envSuffix = `.${process.env.DASH_ENV}`;
+}
+
+let home = Os.homedir();
+
 let Wallet = require("../wallet.js");
+let Cli = require("./_cli.js");
 
 let b58c = require("../lib/dashcheck.js");
 let Dashsight = require("dashsight");
@@ -46,17 +51,6 @@ let Secp256k1 = require("secp256k1");
  * @prop {String} preferencesPath
  * @prop {String} privateWalletsPath
  */
-
-/** @type {FsStoreConfig} */
-let storeConfig = {
-  dir: `${home}/.config/dash`,
-
-  // paths
-  cachePath: "",
-  payWalletsPath: "",
-  preferencesPath: "",
-  privateWalletsPath: "",
-};
 
 /** @type {Config} */
 //@ts-ignore
@@ -74,6 +68,30 @@ let jsonOut = false;
 async function main() {
   /* jshint maxcomplexity:1000 */
   let args = process.argv.slice(2);
+
+  let confName = Cli.removeOption(args, ["-c", "--config-name"]);
+  if (null !== confName) {
+    // intentional empty string on CLI takes precedence over ENVs
+    envSuffix = confName;
+  }
+
+  /** @type {FsStoreConfig} */
+  let storeConfig = {
+    dir: `${home}/.config/dash${envSuffix}`,
+
+    // paths
+    cachePath: "",
+    payWalletsPath: "",
+    preferencesPath: "",
+    privateWalletsPath: "",
+  };
+  if (envSuffix.length > 0) {
+    console.error(`🚜 DASH_ENV=${process.env.DASH_ENV}`);
+    console.error(`⚙️ ~/.config/dash${envSuffix}/`);
+  }
+
+  require("dotenv").config({ path: `${storeConfig.dir}/env` });
+  require("dotenv").config({ path: `${storeConfig.dir}/.env.secret` });
 
   let confDir = removeFlagAndArg(args, ["-c", "--config-dir"]);
   if (confDir) {
@@ -287,10 +305,11 @@ function usage() {
   console.info(`    wallet version`);
   console.info();
   console.info(`Global Options:`);
-  console.info(`    --config-dir ~/.config/dash/`);
+  console.info(`    -c, --config-name ''          add suffix to config dir name (also DASH_ENV)`);
+  console.info(`    --config-dir ~/.config/dash/  change full config path`);
   // TODO set staletime = Infinity for --offline?
   //console.info(`    --offline # skip update checks`);
-  console.info(`    --sync    # wait for sync first`);
+  console.info(`    --sync                        wait for sync first`);
   console.info();
 }
 
