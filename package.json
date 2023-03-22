@@ -13,12 +13,11 @@
     "wallet.js"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "doc": "npx jsdoc@3.x --configure ./jsdoc.conf.json --destination ./docs --package ./package.json --readme ./README.md --access all --private --recurse ./lib/",
+    "bump": "npm version -m \"chore(release): bump to v%s\"",
     "fmt": "npx -p prettier@2.x -- prettier -w '**/*.{js,md}'",
     "lint": "npx -p typescript@4.x -- tsc -p ./jsconfig.json",
     "prepublish": "npx -p jswt@1.x -- reexport",
-    "version": "npm version -m \"chore(release): bump to v%s\""
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
