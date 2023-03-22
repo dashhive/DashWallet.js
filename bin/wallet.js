@@ -43,7 +43,17 @@ let Dashsight = require("dashsight");
 let Secp256k1 = require("secp256k1");
 // let Qr = require("./qr.js");
 
-let colorize = require("@pinojs/json-colorizer");
+/**
+ * @param {String} v
+ * @returns {String} - JSON with syntax highlighting
+ */
+let colorize = function (v) {
+  return v;
+};
+if (!process.stdout.isTTY) {
+  let _colorize = require("@pinojs/json-colorizer");
+  colorize = _colorize;
+}
 
 /**
  * @typedef FsStoreConfig
@@ -1057,9 +1067,7 @@ async function stat(config, wallet, args) {
     let utxos = await config.dashsight.getCoreUtxos(addrPrefix);
     if (jsonOut) {
       let json = JSON.stringify(utxos, null, 2);
-      if (process.stdout.isTTY) {
-        json = colorize(json);
-      }
+      json = colorize(json);
       console.info(json);
       return;
     }
