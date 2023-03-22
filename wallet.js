@@ -9,7 +9,6 @@
   let Bip39 = require("bip39");
   //let Passphrase = require("@root/passphrase");
   let DashApi = require("./dashapi.js");
-  let RIPEMD160 = require("ripemd160");
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
