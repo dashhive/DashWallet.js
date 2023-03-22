@@ -43,6 +43,7 @@ OPTIONS:
 
 ```sh
 # wallet contact <handle> [xpub-or-addr]
+wallet contact @johndoe 'xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
 wallet contact @kraken 'Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 ```
 
@@ -94,7 +95,7 @@ Wallet.generate({
   "device": null,
   "contact": null,
   "priority": 1,
-  "mnemonic": ["twelve", "words"],
+  "phrase": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
   "created_at": "2022-02-22T22:02:22.000Z",
   "archived_at": null
 }
