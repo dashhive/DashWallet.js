@@ -6,8 +6,7 @@
   exports.Wallet = Wallet;
 
   let DashHd = require("dashhd");
-  let Bip39 = require("bip39");
-  //let Passphrase = require("@root/passphrase");
+  let DashPhrase = require("dashphrase");
   let DashApi = require("./dashapi.js");
   let COIN_TYPE = 5;
 
@@ -136,7 +135,7 @@
    * @prop {String?} contact
    * @prop {String?} device
    * @prop {String} label
-   * @prop {Array<String>} mnemonic
+   * @prop {String} phrase
    * @prop {Array<WifInfo>} wifs - TODO maybe Object.<String, WifInfo>
    * @prop {String} name
    * @prop {Number} priority
@@ -213,7 +212,7 @@
         .sort(wallet._sort);
       if (!rxws.length) {
         // TODO use main wallet as seed
-        rxWallet = Wallet.generate({
+        rxWallet = await Wallet.generate({
           name: handle,
           label: handle,
           priority: Date.now(),
@@ -231,11 +230,12 @@
         rxws.push(rxWallet);
       }
       rxWallet = rxws[0];
-
       // Note: we should never have a WIF wallet here
 
-      // TODO use derivation from main for non-imported wallets
-      let seed = await Bip39.mnemonicToSeed(rxWallet.mnemonic.join(" "));
+      _transitionPhrase(rxWallet); // TODO remove
+
+      let salt = "";
+      let seed = await DashPhrase.toSeed(rxWallet.phrase, salt);
       let walletKey = await DashHd.fromSeed(seed);
       // The full path looks like `m/44'/5'/0'/0/0`
       // We "harden" the prefix `m/44'/5'/0'/0`
@@ -334,10 +334,11 @@
      * @param {Object} opts
      * @param {Array<String>} opts.wifs
      * @param {Number} opts.now - ms since epoch (e.g. Date.now())
+     * @param {Number} opts.staletime - when to refresh
      * @returns {Promise<Array<WalletAddress>>}
      * TODO - multiuse: true
      */
-    wallet.import = async function ({ wifs, now = Date.now() }) {
+    wallet.import = async function ({ wifs, now = Date.now(), staletime = 0 }) {
       /** @type {Array<WalletAddress>} */
       let addrInfos = [];
 
@@ -347,7 +348,7 @@
         let addr = await DashApi.wifToAddr(wif);
         let addrInfo = safe.cache.addresses[addr];
 
-        await indexWifAddr(addr, now);
+        await indexWifAddr(addr, now, staletime);
 
         addrInfos.push(
           Object.assign({ addr: addr }, safe.cache.addresses[addr]),
@@ -368,6 +369,7 @@
           },
         );
         if (!exists) {
+          // the first "wifs" is the name of the wallet
           safe.privateWallets.wifs.wifs.push({
             addr: addr,
             wif: wif,
@@ -526,15 +528,17 @@
       let ws = await wallet.findPrivateWallets({ handle });
       let w = ws[0] || safe.privateWallets.main;
 
-      let hasMnemonic = w.mnemonic?.length > 0;
-      if (!hasMnemonic) {
+      _transitionPhrase(w); // TODO remove
+
+      let hasRecoveryPhrase = w.phrase?.length > 0;
+      if (!hasRecoveryPhrase) {
         throw new Error(
-          "[Sanity Fail] must use private, mnemonic wallet (not WIF or pay wallet)",
+          "[Sanity Fail] must use private wallet from a recovery phrase (not WIF or pay wallet)",
         );
       }
 
-      let mnemonic = w.mnemonic.join(" ");
-      let seed = await Bip39.mnemonicToSeed(mnemonic);
+      let salt = "";
+      let seed = await DashPhrase.toSeed(w.phrase, salt);
       let walletKey = await DashHd.fromSeed(seed);
 
       let account = 0; // main
@@ -607,7 +611,9 @@
       let ws = await wallet.findPrivateWallets({ handle });
       let privateWallet = ws[0];
 
-      if (!privateWallet.mnemonic.length) {
+      ws.forEach(_transitionPhrase); // TODO remove
+
+      if (!privateWallet.phrase?.length) {
         // TODO generate new WIF
         throw new Error("not implemented");
       }
@@ -942,8 +948,10 @@
         };
       }
 
-      let mnemonic = w.mnemonic.join(" ");
-      let seed = await Bip39.mnemonicToSeed(mnemonic);
+      _transitionPhrase(w); // TODO remove
+
+      let salt = "";
+      let seed = await DashPhrase.toSeed(w.phrase, salt);
       let walletKey = await DashHd.fromSeed(seed);
 
       /** @type {import('dashhd').HDXKey} */
@@ -1064,9 +1072,13 @@
           await config.store.save(safe.privateWallets);
         }
 
-        let mnemonic = w.mnemonic.join(" ");
-        // TODO use derivation from main for non-imported wallets
-        let seed = await Bip39.mnemonicToSeed(mnemonic);
+        _transitionPhrase(w); // TODO remove
+        if (!w.phrase) {
+          return;
+        }
+
+        let salt = "";
+        let seed = await DashPhrase.toSeed(w.phrase, salt);
         let walletKey = await DashHd.fromSeed(seed);
         // The full path looks like `m/44'/5'/0'/0/0`
         // We "harden" the prefix `m/44'/5'/0'/0`
@@ -1327,7 +1339,7 @@
       safe.privateWallets = {};
     }
     if (!safe.privateWallets.wifs) {
-      safe.privateWallets.wifs = Wallet.generate({
+      safe.privateWallets.wifs = await Wallet.generate({
         label: "WIFs",
         name: "wifs",
         priority: 0,
@@ -1336,7 +1348,7 @@
       await config.store.save(safe.privateWallets);
     }
     if (!safe.privateWallets.main) {
-      safe.privateWallets.main = Wallet.generate({
+      safe.privateWallets.main = await Wallet.generate({
         name: "main",
         label: "Main",
         priority: 1,
@@ -1372,23 +1384,28 @@
    * @param {String} opts.label - human friendly
    * @param {Number} opts.priority - sparse index, higher is higher
    * @param {String?} [opts.contact] - handle of contact
-   * @param {Array<WifInfo>} [opts.wifs] - loose wifs instead of mnemonic
-   * @returns {PrivateWallet}
+   * @param {Array<WifInfo>} [opts.wifs] - loose wifs instead of recovery phrase
+   * @returns {Promise<PrivateWallet>}
    */
-  Wallet.generate = function ({ name, label, priority, contact = null, wifs }) {
-    let mnemonic = "";
+  Wallet.generate = async function ({
+    name,
+    label,
+    priority,
+    contact = null,
+    wifs,
+  }) {
+    let phrase = "";
     if (!wifs) {
-      mnemonic = Bip39.generateMnemonic();
+      phrase = await DashPhrase.generate();
     }
 
-    //let mnemonic = await Passphrase.generate(128);
     return {
       name: name.toLowerCase(),
       label: label,
       device: null,
       contact: contact,
       priority: priority || 0,
-      mnemonic: mnemonic.split(/[,\s\n\|]+/g),
+      phrase: phrase,
       wifs: wifs || [],
       created_at: new Date().toISOString(),
       archived_at: null,
@@ -1460,6 +1477,28 @@
 
     return true;
   };
+
+  /**
+   * @param {Object} w
+   * @param {Array<String>} [w.mnemonic]
+   * @param {String} [w.phrase]
+   */
+  function _transitionPhrase(w) {
+    //@ts-ignore
+    if (w.mnemonic?.length > 0) {
+      //@ts-ignore
+      w.phrase = w.mnemonic;
+    }
+    if (!w.phrase) {
+      w.phrase = "";
+    }
+
+    let isMnemonic = Array.isArray(w.phrase);
+    if (isMnemonic) {
+      //@ts-ignore
+      w.phrase = w.phrase.filter(Boolean).join(" ");
+    }
+  }
 
   if ("undefined" !== typeof module) {
     module.exports = Wallet;
