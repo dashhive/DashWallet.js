@@ -653,10 +653,13 @@ async function pay(config, wallet, args) {
 
   let utxos = await coinListToUtxos(wallet, coinList);
 
-  let tx = await wallet.createTx({
-    handle: handle,
-    amount: satoshis,
-    utxos: utxos,
+  let address = await wallet.getNextPayAddr({ handle });
+  let tx = await wallet.createGreedyTx({
+    inputs: utxos,
+    output: {
+      address,
+      satoshis,
+    },
   });
 
   console.info();
@@ -689,9 +692,12 @@ async function pay(config, wallet, args) {
     /** @type {CoinSorter} */
     function (a, b) {
       let result = 0;
-      ["amount", "wallet", "addr"].some(function (sortBy) {
+      ["amount", "satoshis", "wallet", "addr"].some(function (sortBy) {
         if (!coinSorters[sortBy]) {
           throw new Error(`unrecognized sort '${sortBy}'`);
+        }
+        if ("amount" === sortBy) {
+          sortBy = "satoshis";
         }
 
         //@ts-ignore - TODO
@@ -729,7 +735,7 @@ async function pay(config, wallet, args) {
 
   console.info();
 
-  let sentAmount = Wallet.toDash(tx.amount).toFixed(8).padStart(maxLen, " ");
+  let sentAmount = Wallet.toDash(tx.satoshis).toFixed(8).padStart(maxLen, " ");
   console.info(`Paid to Recipient:       ${sentAmount}  (${handle})`);
 
   let feeAmount = Wallet.toDash(tx.fee).toFixed(8).padStart(maxLen, " ");
@@ -921,6 +927,12 @@ let coinSorters = {
       }
       return 0;
     },
+  satoshis:
+    /** @type {CoinSorter} */
+    function bySatoshisDesc(a, b) {
+      return b.satoshis - a.satoshis;
+    },
+  // alias of satoshis
   amount:
     /** @type {CoinSorter} */
     function bySatoshisDesc(a, b) {
@@ -944,7 +956,7 @@ async function listCoins(config, wallet, args) {
   let sortArg = removeFlagAndArg(args, ["--sort"]) || "";
   let sortBys = sortArg.split(/[\s,]/).filter(Boolean);
   if (!sortBys.length) {
-    sortBys = ["wallet", "amount", "addr"];
+    sortBys = ["wallet", "amount", "satoshis", "addr"];
   }
 
   let safe = config.safe;

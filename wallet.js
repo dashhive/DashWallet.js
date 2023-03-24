@@ -5,10 +5,23 @@
   //@ts-ignore
   exports.Wallet = Wallet;
 
+  let DashApi = {};
   let DashHd = require("dashhd");
   let DashKeys = require("dashkeys");
   let DashPhrase = require("dashphrase");
-  let DashApi = {};
+  //@ts-ignore
+  let DashTx = exports.DashTx || require("dashtx");
+  let dashTx = DashTx.create();
+
+  /*
+  let Secp256k1 = require("@dashincubator/secp256k1");
+
+  async function sign({ privateKey, hash }) {
+    let sigOpts = { canonical: true };
+    let sigBuf = await Secp256k1.sign(hash, privateKey, sigOpts);
+    return Tx.utils.u8ToHex(sigBuf);
+  }
+  */
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
@@ -34,11 +47,18 @@
   /**
    * @template {Pick<CoreUtxo, "satoshis">} T
    * @param {Array<T>} utxos
-   * @param {Number} fullAmount - including fee estimate
+   * @param {Number} output - including fee estimate
    * @return {Array<T>}
    */
-  DashApi.getOptimalUtxos = function (utxos, fullAmount) {
+  DashApi.getOptimalUtxos = function (utxos, output) {
     let balance = DashApi.getBalance(utxos);
+    let fees = DashTx.appraise({
+      //@ts-ignore
+      inputs: [{}],
+      outputs: [{}],
+    });
+
+    let fullAmount = output + fees.min;
 
     if (balance < fullAmount) {
       return [];
@@ -67,10 +87,26 @@
     }
 
     // try to use as few coins as possible
-    utxos.some(function (utxo) {
+    utxos.some(function (utxo, i) {
       included.push(utxo);
       total += utxo.satoshis;
-      return total >= fullAmount;
+      if (total >= fullAmount) {
+        return true;
+      }
+
+      // it quickly becomes astronomically unlikely to hit the one
+      // exact possibility that least to paying the absolute minimum,
+      // but remains about 75% likely to hit any of the mid value
+      // possibilities
+      if (i < 2) {
+        // 1 input 25% chance of minimum (needs ~2 tries)
+        // 2 inputs 6.25% chance of minimum (needs ~8 tries)
+        fullAmount = fullAmount + DashTx.MIN_INPUT_SIZE;
+        return false;
+      }
+      // but by 3 inputs... 1.56% chance of minimum (needs ~32 tries)
+      // by 10 inputs... 0.00953674316% chance (needs ~524288 tries)
+      fullAmount = fullAmount + DashTx.MIN_INPUT_SIZE + 1;
     });
     return included;
   };
@@ -104,10 +140,6 @@
   };
 
   let COIN_TYPE = 5;
-
-  //@ts-ignore
-  let Dashcore = exports.dashcore || require("./lib/dashcore.js");
-  let Transaction = Dashcore.Transaction;
 
   /**
    * Like CoreUtxo, but only the parts we need for a transaction
@@ -723,11 +755,21 @@
      * Send with change back to main wallet
      * @param {Object} opts
      * @param {String} opts.handle
-     * @param {Number} opts.amount - duffs/satoshis
+     * @param {Number} opts.satoshis - duffs/satoshis
      * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
      */
-    wallet.pay = async function ({ handle, amount, utxos }) {
-      let tx = await wallet.createTx({ handle, amount, utxos });
+    wallet.pay = async function ({
+      handle,
+      satoshis,
+      utxos,
+      now = Date.now(),
+    }) {
+      let address = await wallet.getNextPayAddr({ handle, now });
+      let tx = await wallet.createGreedyTx({
+        inputs: utxos,
+        output: { address, satoshis },
+      });
 
       let result = await dashsight.instantSend(tx.hex).catch(
         /** @param {Error} err */
@@ -740,7 +782,6 @@
         },
       );
 
-      let now = Date.now();
       await wallet._spendUtxos({ utxos: tx.utxos, now: now });
       await wallet._updateAddrInfo(tx._changeAddr, now, 0);
       await config.store.save(safe.cache);
@@ -777,132 +818,99 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.handle
-     * @param {Number?} opts.amount - duffs/satoshis
-     * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {import('dashtx').TxOutput} opts.output
      * @param {Number} [opts.now] - ms
      */
-    wallet.createTx = async function ({
-      handle,
-      amount,
-      utxos,
+    wallet.createGreedyTx = async function ({
+      inputs,
+      output,
       now = Date.now(),
     }) {
-      let nextPayAddr = "";
-      let isPayAddr = _isPayAddr(handle);
-      if (isPayAddr) {
-        nextPayAddr = handle;
-      }
+      let utxos = inputs;
+      let satoshis = output.satoshis;
+      let nextPayAddr = output.address;
 
       let lessFees = false;
-      if (!amount) {
+      if (!satoshis) {
         if (!utxos?.length) {
           throw new Error(
-            `amount must be a positive number unless 'utxos' are specified`,
+            `'satoshis' must be a positive number unless 'utxos' are specified`,
           );
         }
         lessFees = true;
-        amount = utxos.reduce(function (total, utxo) {
+        satoshis = utxos.reduce(function (total, utxo) {
           return total + utxo.satoshis;
         }, 0);
       }
 
-      if (!nextPayAddr) {
-        let payWallets = await wallet.findPayWallets({ handle });
-        let payWallet = payWallets[0];
-        if (!payWallet) {
-          throw new Error(`no pay-to wallet found for '${handle}'`);
-        }
-
-        nextPayAddr = payWallet.addr;
-        if (!nextPayAddr) {
-          let xpubKey = await DashHd.fromXKey(payWallet.xpub);
-          let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
-          await config.store.save(safe.cache);
-
-          let addressKey = await deriveAddress(xpubKey, nextIndex);
-          nextPayAddr = await DashHd.toAddr(addressKey.publicKey);
-        }
-      }
-
-      let feePreEstimate = 1000;
+      /** @type {Number} */
       let balance;
-      let allUtxos;
       if (utxos) {
-        allUtxos = utxos;
         balance = DashApi.getBalance(utxos);
       } else {
-        // TODO make more accurate? How many bytes per additional utxo? signature?
-        allUtxos = await wallet.utxos();
-        utxos = await DashApi.getOptimalUtxos(
-          allUtxos,
-          amount + feePreEstimate,
-        );
+        let allUtxos = await wallet.utxos();
+        utxos = await DashApi.getOptimalUtxos(allUtxos, satoshis);
 
         balance = DashApi.getBalance(utxos);
 
         if (!utxos.length) {
           let totalBalance = DashApi.getBalance(allUtxos);
           let dashBalance = DashApi.toDash(totalBalance);
-          let dashAmount = DashApi.toDash(amount);
+          let dashAmount = DashApi.toDash(satoshis);
+          let fees = DashTx.appraise({
+            inputs: utxos,
+            outputs: [{}],
+          });
+          let feeAmount = DashApi.toDash(fees.mid);
           throw new Error(
-            `insufficient funds: cannot pay ${dashAmount} (+fees) with ${dashBalance}`,
+            `insufficient funds: cannot pay ${dashAmount} (+${feeAmount} fee) with ${dashBalance}`,
           );
         }
-
-        // (estimate) don't send dust back as change
-        if (balance - amount <= DashApi.DUST + DashApi.FEE) {
-          // TODO see note about Dash Direct
-          // amount = balance;
-          feePreEstimate = balance - amount;
-        }
       }
 
-      // TODO check utxos are available
-      // (or preferably fail and retry)
-
-      let wifs = await wallet._utxosToWifs(utxos);
-      if (!wifs.length) {
-        throw new Error(
-          `could not find private keys corresponding to chosen utxos`,
-        );
-      }
-
-      let payAmount = amount;
-      if (lessFees) {
-        payAmount = amount - feePreEstimate;
-      }
-
-      //@ts-ignore - no input required, actually
-      let tmpTx = new Transaction()
-        //@ts-ignore - allows single value or array
-        .from(utxos);
-      tmpTx.to(nextPayAddr, payAmount);
-      //@ts-ignore - the JSDoc is wrong in dashcore-lib/lib/transaction/transaction.js
-      let changeAddr = await wallet._nextWalletAddr({
-        handle: "main",
-        usage: 1,
+      let payAmount = satoshis;
+      let fees = DashTx.appraise({
+        inputs: utxos,
+        outputs: [output],
       });
-      await config.store.save(safe.cache);
-      tmpTx.change(changeAddr);
-      tmpTx.sign(wifs);
+      let feeEstimate = fees.min;
+      let unlikelyMinmium = utxos.length > 2;
+      if (unlikelyMinmium) {
+        feeEstimate += 2 * utxos.length;
+      }
 
-      // TODO getsmartfeeestimate??
-      // fee = 1duff/byte (2 chars hex is 1 byte)
-      //       +2 to be safe (there's a possibility of an extra BigInt padding byte on 3 byte sequences)
-      let fee = 2 + tmpTx.toString().length / 2;
       if (lessFees) {
-        payAmount = amount - fee;
+        payAmount = satoshis - fees.min;
+      }
+      let outputs = [
+        {
+          address: nextPayAddr,
+          satoshis: payAmount,
+        },
+      ];
+
+      let changeAmount =
+        balance + -satoshis + -feeEstimate + -DashTx.OUTPUT_SIZE;
+      let hasChange = changeAmount > DashApi.DUST;
+      let changeAddr = "";
+      if (hasChange) {
+        changeAddr = await wallet._nextWalletAddr({
+          handle: "main",
+          usage: 1,
+        });
+        outputs.push({
+          address: changeAddr,
+          satoshis: changeAmount,
+        });
+        feeEstimate += DashTx.OUTPUT_SIZE;
+      } else {
+        // Re: Dash Direct: we round in favor of the network (exact payments)
+        feeEstimate = balance + -satoshis;
       }
 
-      // (adjusted) don't send dust back as change
-      if (balance + -payAmount + -fee <= DashApi.DUST) {
-        //payAmount = balance - fee;
-
-        // Dash Direct requires exact amounts, I believe
-        // TODO double check
-        fee = balance - payAmount;
-      }
+      // TODO check utxos are available to spend
+      // (or preferably fail and retry)
 
       //console.log("DEBUG tx");
       //console.log(JSON.stringify(utxos, null, 2));
@@ -911,35 +919,161 @@
       //console.log("Fee", fee);
       //console.log("Change Addr", changeAddr.slice(0, 4));
 
-      //@ts-ignore - no input required, actually
-      let tx = new Transaction()
-        //@ts-ignore - allows single value or array
-        .from(utxos);
-      tx.to(nextPayAddr, payAmount);
-      tx.fee(fee);
-      //@ts-ignore - see above
-      tx.change(changeAddr);
-      tx.sign(wifs);
+      for (let output of outputs) {
+        //@ts-ignore TODO bad export
+        let pkh = await DashKeys.addrToPkh(output.address);
+        //@ts-ignore TODO bad export
+        let pkhHex = DashKeys.utils.bytesToHex(pkh);
+        Object.assign(output, { pubKeyHash: pkhHex });
+      }
+      let txInfoRaw = {
+        inputs: utxos,
+        outputs: outputs,
+      };
+      let keys = await wallet._utxosToPrivKeys(utxos);
+      //console.log(txInfoRaw);
+      //console.log(keys);
 
-      let txHex = tx.serialize();
+      /** @type {import('dashtx').TxInfoSigned} */
+      let txInfo;
+      let limit = 128;
 
-      // TODO pre-sync with return info
-      safe.cache.addresses[changeAddr].sync_at = now + 3000;
-      let recipAddrInfo = safe.cache.addresses[changeAddr];
-      if (recipAddrInfo) {
-        recipAddrInfo.sync_at = now + 3000;
+      let lastTx = "";
+      let hasEntropy = true;
+      for (let n = 0; true; n += 1) {
+        txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+        //console.log("DEBUG txInfoRaw (entropy):");
+        //console.log(txInfoRaw);
+
+        lastTx = txInfo.transaction;
+        let fee = txInfo.transaction.length / 2;
+        if (fee <= feeEstimate) {
+          break;
+        }
+
+        if (txInfo.transaction === lastTx) {
+          hasEntropy = false;
+          break;
+        }
+        if (n >= limit) {
+          throw new Error(
+            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${feeEstimate}`,
+          );
+        }
       }
 
-      return {
+      if (!hasEntropy) {
+        for (let n = 0; true; n += 1) {
+          let feeIsWalkable = lessFees || changeAmount > 0;
+          if (!feeIsWalkable) {
+            // TODO try to add another utxo before failing
+            throw new Error(
+              `no signing entropy and the fee variance is too low to cover the marginal cost of all possible signature iterations`,
+            );
+          }
+
+          let outIndex = 0;
+          if (changeAddr) {
+            outIndex = txInfoRaw.outputs.length - 1;
+            changeAmount -= 1;
+          }
+          txInfoRaw.outputs[outIndex].satoshis -= 1;
+
+          txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+
+          //console.log("DEBUG txInfoRaw (walk fee):");
+          //console.log(txInfoRaw);
+
+          let fee = txInfo.transaction.length / 2;
+          if (fee <= feeEstimate) {
+            break;
+          }
+
+          if (n >= limit) {
+            throw new Error(
+              `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${feeEstimate}`,
+            );
+          }
+        }
+      }
+
+      //console.info(JSON.stringify(txInfo, null, 2));
+      //process.exit(1);
+
+      let txHex = txInfo.transaction;
+
+      // TODO is this leftover cruft? why is this here?
+      await config.store.save(safe.cache);
+
+      if (changeAddr) {
+        // TODO pre-sync with return info
+        safe.cache.addresses[changeAddr].sync_at = now + 3000;
+        let recipAddrInfo = safe.cache.addresses[changeAddr];
+        if (recipAddrInfo) {
+          recipAddrInfo.sync_at = now + 3000;
+        }
+      }
+
+      let sent = 0;
+      for (let output of txInfo.outputs) {
+        sent += output.satoshis;
+      }
+      let fee = balance - sent;
+      let change = 0;
+      if (changeAddr) {
+        let index = txInfo.outputs.length - 1;
+        let output = txInfo.outputs[index];
+        sent -= output.satoshis;
+        change = output.satoshis;
+      }
+
+      // TODO change names:
+      //   - balance => available
+      //   - satoshis => sent
+      let result = {
         hex: txHex,
         utxos: utxos,
         balance: balance,
         _recipientAddr: nextPayAddr,
-        amount: payAmount,
+        satoshis: sent,
         fee: fee,
-        change: balance - (payAmount + fee),
+        change: change,
         _changeAddr: changeAddr,
       };
+      //console.log(result);
+
+      return result;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} [opts.now] - ms
+     */
+    wallet.getNextPayAddr = async function ({ handle, now = Date.now() }) {
+      let isPayAddr = _isPayAddr(handle);
+      if (isPayAddr) {
+        return handle;
+      }
+
+      let nextPayAddr = "";
+      let payWallets = await wallet.findPayWallets({ handle });
+      let payWallet = payWallets[0];
+      if (!payWallet) {
+        throw new Error(`no pay-to wallet found for '${handle}'`);
+      }
+
+      nextPayAddr = payWallet.addr;
+      if (!nextPayAddr) {
+        let xpubKey = await DashHd.fromXKey(payWallet.xpub);
+        let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
+        await config.store.save(safe.cache);
+
+        let addressKey = await deriveAddress(xpubKey, nextIndex);
+        nextPayAddr = await DashHd.toAddr(addressKey.publicKey);
+      }
+
+      return nextPayAddr;
     };
 
     /**
@@ -960,11 +1094,13 @@
 
     /**
      * @param {Array<CoreUtxo>} utxos
-     * @returns {Promise<Array<String>>} - wifs
+     * @returns {Promise<Array<Uint8Array>>} - wifs
      */
-    wallet._utxosToWifs = async function (utxos) {
-      /** @type {Object.<String, Boolean>} */
-      let wifs = {};
+    wallet._utxosToPrivKeys = async function (utxos) {
+      ///** @type {Object.<String, Uint8Array>} */
+      //let wifs = {};
+      /** @type {Array<Uint8Array>} */
+      let privKeys = [];
 
       await utxos.reduce(async function (promise, utxo) {
         await promise;
@@ -973,13 +1109,25 @@
           addr: utxo.address,
           _error: true,
         });
-        if (wifInfo) {
-          wifs[wifInfo.wif] = true;
+        if (!wifInfo) {
+          return;
         }
+        /*
+        if (wifs[wifInfo.wif]) {
+          return;
+        }
+
+        //@ts-ignore TODO bad type export
+        wifs[wifInfo.wif] = await DashKeys.wifToPrivKey(wifInfo.wif);
+        */
+
+        //@ts-ignore TODO bad type export
+        let privKey = await DashKeys.wifToPrivKey(wifInfo.wif);
+        privKeys.push(privKey);
       }, Promise.resolve());
 
-      let wifkeys = Object.keys(wifs);
-      return wifkeys;
+      //let privKeys = Object.values(wifs);
+      return privKeys;
     };
 
     /**
