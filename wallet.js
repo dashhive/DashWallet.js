@@ -1047,7 +1047,7 @@
       /** @type {import('dashhd').HDXKey} */
       let xprvKey = await DashHd.derivePath(walletKey, addrInfo.hdpath);
 
-      let addressKey = await xprvKey.deriveAddress(addrInfo.index);
+      let addressKey = await deriveAddress(xprvKey, addrInfo.index);
       let address = await DashHd.toAddr(addressKey.publicKey);
 
       if (address !== addr) {
