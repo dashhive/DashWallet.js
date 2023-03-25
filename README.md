@@ -1,63 +1,28 @@
 # [DashWallet.js](https://github.com/DashHive/DashWallet.js)
 
-A more civilized wallet for a less civilized age...
+A more civilized DASH Wallet SDK for a less civilized age...
 
-```sh
-dashwallet send @johndoe 1.0
-```
+# Install
 
-```txt
-Sent Đ1.0 to @johndoe!
-```
+1. Install [`node`](https://webinstall.dev/node)
 
-# CLI (not version-locked)
+   ```sh
+   # Mac, Linux
+   curl -sS https://webi.sh/node | sh
 
-```txt
-dashwallet v0.5.2 - A more civilized wallet for a less civilized age
+   # Windows
+   curl.exe https://webi.ms/node | powershell
+   ```
 
-USAGE:
-    dashwallet <subcommand> [flags] [options] [--] [args]
+2. Install `dashwallet-cli`
+   ```sh
+   npm install --save dashwallet@0.5
+   npm install --save @dashincubator/secp256k1@1.7
+   ```
 
-SUBCOMMANDS:
-    accounts                           show accounts (and extra wallets)
-    export <addr> [./dir/ or x.wif]    write private keys to disk
-    contact <handle> [xpub-or-addr]    add contact or show xpubs & addrs
-    generate address                   gen and store one-off wif
-    import <./path/to.wif>             save private keys
-    coins [--sort wallet,amount,addr]  show all spendable coins
-    send <handle|pay-addr> <DASH>      send to an address or contact
-                    [--dry-run] [--coins Xxxxx:xx:0,...]
-    remove <addr> [--no-wif]           remove stand-alone key
-    stat <addr>                        show current coins & balance
-    sync                               update address caches
-    version                            show version and exit
+# Alpha API (will change)
 
-OPTIONS:
-    DASH_ENV, -c, --config-name ''     use ~/.config/dash{.suffix}/
-    --config-dir ~/.config/dash/       change full config path
-    --json                             output as JSON (if possible)
-    --sync                             wait for sync first
-```
-
-## Examples
-
-```sh
-# wallet contact <handle> [xpub-or-addr]
-dashwallet contact @johndoe 'xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-dashwallet contact @kraken 'Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-```
-
-```txt
-Send DASH to '<handle>' at this address:
-Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-Share this address with '<handle>':
-xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-# Alpha API (may change)
-
-# Wallet.create(config)
+## Wallet.create(config)
 
 Creates a wallet instance with the given config
 
@@ -76,7 +41,7 @@ Creates a wallet instance with the given config
 let w = await Wallet.create({ storage, safe, dashsight });
 ```
 
-# Wallet.generate(walletInfo)
+## Wallet.generate(walletInfo)
 
 Generates a complete `PrivateWallet` object.
 
@@ -101,7 +66,7 @@ Wallet.generate({
 }
 ```
 
-# Wallet.generateAddress(addrInfo)
+## Wallet.generateAddress(addrInfo)
 
 Generates a complete `addrInfo` object.
 
@@ -124,7 +89,7 @@ Wallet.generateAddress({
 }
 ```
 
-# Wallet.generatePayWallet(walletInfo)
+## Wallet.generatePayWallet(walletInfo)
 
 Generates a complete `PayWallet` object.
 
@@ -142,7 +107,7 @@ Generates a complete `PayWallet` object.
 }
 ```
 
-# Wallet#balances()
+## Wallet#balances()
 
 Show spendable duffs / satoshis per each wallet.
 
@@ -159,7 +124,7 @@ await wallet.balances();
 }
 ```
 
-# Wallet#befriend(friendDetails)
+## Wallet#befriend(friendDetails)
 
 Generate or show an `xpub` for your contact, and import their xpub for you, if
 any.
@@ -177,13 +142,17 @@ await wallet.befriend({
 ["<xpub-YOU-should-give-to-john>", "xpub-JOHN-gave-to-you", "addr-from-JOHN"]
 ```
 
-# wallet.createTx(txOpts)
+## wallet.createTx(txOpts)
 
-Creates a transaction (hex string) for the given amount to the given contact
-using `utxo`s from across all `PrivateWallet`s.
+TODO: Creates a clean (fingerprint-free) transaction.
+
+## wallet.createDirtyTx(txOpts)
+
+Creates a dirty (fingerprint) transaction (hex string) for the given amount to
+the given contact using `utxo`s from across all `PrivateWallet`s.
 
 ```js
-await wallet.createTx({ handle, amount, utxos });
+await wallet.createDirtyTx({ handle, amount, utxos });
 ```
 
 ```json
@@ -203,7 +172,7 @@ await wallet.createTx({ handle, amount, utxos });
 
 The result can be used with `dashsight.instantSend(tx.hex)`.
 
-# wallet#findChangeWallet(friendOpts)
+## wallet#findChangeWallet(friendOpts)
 
 Finds your `PrivateWallet` for the given contact.
 
@@ -213,7 +182,7 @@ await wallet.findChangeWallet({ handle: "@johndoe" });
 
 Returns a `PrivateWallet`, as described above.
 
-# wallet#findFriend(friendOpts)
+## wallet#findFriend(friendOpts)
 
 Finds the xpub-only (pay-to, send-only) wallet for the given contact.
 
@@ -223,7 +192,7 @@ await wallet.findFriend({ handle: "@johndoe" });
 
 Returns a `PayWallet`, as described above.
 
-# wallet#nextChangeAddr(friendOpts)
+## wallet#nextChangeAddr(friendOpts)
 
 Find the next unused change address for the `PrivateWallet` associated with the
 given contact, or from the `main` wallet as a fallback.
@@ -238,7 +207,7 @@ Returns a PayAddr.
 "Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 ```
 
-# Wallet#sync(syncOpts)
+## Wallet#sync(syncOpts)
 
 (Re)index addresses for each wallet and fetch latest transactions for the next
 few addresses.
@@ -249,7 +218,7 @@ let staletime = 60 * 1000; // 0 to force immediate sync
 await wallet.sync({ now, staletime });
 ```
 
-# Wallet#utxos()
+## Wallet#utxos()
 
 Get _all_ utxos across all `PrivateWallet`s.
 

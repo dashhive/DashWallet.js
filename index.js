@@ -6,11 +6,6 @@ module.exports = require("./lib/dashwallet.js")
 
 // these typedef reexports will be available to dependent packages
 /**
- * @typedef {import('./bin/wallet.js').WalletUtxo} WalletUtxo
- * @typedef {import('./bin/wallet.js').WalletUtxoPartial} WalletUtxoPartial
- * @typedef {import('./bin/wallet.js').FsStoreConfig} FsStoreConfig
- * @typedef {import('./bin/wallet.js').DPayWallets} DPayWallets
- * @typedef {import('./bin/wallet.js').DPrivateWallets} DPrivateWallets
  * @typedef {import('./dashwallet.js').MiniUtxo} MiniUtxo
  * @typedef {import('./dashwallet.js').WalletAddress} WalletAddress
  * @typedef {import('./dashwallet.js').WalletWifPartial} WalletWifPartial
