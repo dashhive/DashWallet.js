@@ -654,7 +654,7 @@ async function pay(config, wallet, args) {
   let utxos = await coinListToUtxos(wallet, coinList);
 
   let address = await wallet.getNextPayAddr({ handle });
-  let tx = await wallet.createGreedyTx({
+  let dirtyTx = await wallet.createDirtyTx({
     inputs: utxos,
     output: {
       address,
@@ -667,17 +667,17 @@ async function pay(config, wallet, args) {
     console.info(
       "Transaction Hex: (inspect at https://live.blockcypher.com/dash/decodetx/)",
     );
-    console.info(tx.hex);
+    console.info(dirtyTx.transaction);
   } else {
     // TODO sendTx
-    let txResult = await config.dashsight.instantSend(tx.hex);
+    let txResult = await config.dashsight.instantSend(dirtyTx.transaction);
     console.info("Sent!");
     console.info();
     console.info(`https://insight.dash.org/tx/${txResult.body.txid}`);
   }
   console.info();
 
-  let wutxos = tx.utxos.map(
+  let wutxos = dirtyTx.inputs.map(
     /**
      * @param {CoreUtxo} utxo
      * @return {WalletUtxo} utxo
@@ -727,7 +727,7 @@ async function pay(config, wallet, args) {
       );
     },
   );
-  let balanceAmount = Wallet.toDash(tx.balance)
+  let balanceAmount = Wallet.toDash(dirtyTx.total)
     .toFixed(8)
     .padStart(maxLen, " ");
   console.info(`                       -------------`);
@@ -735,30 +735,20 @@ async function pay(config, wallet, args) {
 
   console.info();
 
-  let sentAmount = Wallet.toDash(tx.satoshis).toFixed(8).padStart(maxLen, " ");
+  let sentAmount = Wallet.toDash(dirtyTx.sent).toFixed(8).padStart(maxLen, " ");
   console.info(`Paid to Recipient:       ${sentAmount}  (${handle})`);
 
-  let feeAmount = Wallet.toDash(tx.fee).toFixed(8).padStart(maxLen, " ");
+  let feeAmount = Wallet.toDash(dirtyTx.fee).toFixed(8).padStart(maxLen, " ");
   console.info(`Network Fee:             ${feeAmount}`);
 
-  let changeAmount = Wallet.toDash(tx.change).toFixed(8).padStart(maxLen, " ");
+  let changeSats = dirtyTx.change?.satoshis || 0;
+  let changeAmount = Wallet.toDash(changeSats).toFixed(8).padStart(maxLen, " ");
   console.info(`Change:                  ${changeAmount}`);
 
   if (!dryRun) {
     // TODO move to sendTx
     let now = Date.now();
-    await wallet._spendUtxos({
-      utxos: tx.utxos,
-      now: now,
-    });
-    await wallet._updateAddrInfo(tx._changeAddr, now, 0);
-
-    // TODO pre-sync with return info
-    config.safe.cache.addresses[tx._changeAddr].sync_at = now + 3000;
-    let recipAddrInfo = config.safe.cache.addresses[tx._recipientAddr];
-    if (recipAddrInfo) {
-      recipAddrInfo.sync_at = now + 3000;
-    }
+    await wallet.captureDirtyTx({ summary: dirtyTx, now: now });
   }
 
   await config.store.save(config.safe.cache);
@@ -915,6 +905,7 @@ async function getBalances(config, wallet, args) {
  */
 
 /** @type {Object.<String, CoinSorter>} */
+//@ts-ignore
 let coinSorters = {
   addr:
     /** @type {CoinSorter} */
