@@ -696,7 +696,7 @@ async function pay(config, wallet, args) {
     let txResult = await config.dashsight.instantSend(dirtyTx.transaction);
     console.info("Sent!");
     console.info();
-    console.info(`https://insight.dash.org/tx/${txResult.body.txid}`);
+    console.info(`https://insight.dash.org/tx/${txResult.txid}`);
   }
   console.info();
 
