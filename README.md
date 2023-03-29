@@ -1,9 +1,9 @@
-# wallet.js
+# [DashWallet.js](https://github.com/DashHive/DashWallet.js)
 
 A more civilized wallet for a less civilized age...
 
 ```sh
-wallet send @johndoe 1.0
+dashwallet send @johndoe 1.0
 ```
 
 ```txt
@@ -13,10 +13,10 @@ Sent Đ1.0 to @johndoe!
 # CLI (not version-locked)
 
 ```txt
-dashwallet v0.2.1 - A more civilized wallet for a less civilized age
+dashwallet v0.5.2 - A more civilized wallet for a less civilized age
 
 USAGE:
-    wallet <subcommand> [flags] [options] [--] [args]
+    dashwallet <subcommand> [flags] [options] [--] [args]
 
 SUBCOMMANDS:
     accounts                           show accounts (and extra wallets)
@@ -43,8 +43,8 @@ OPTIONS:
 
 ```sh
 # wallet contact <handle> [xpub-or-addr]
-wallet contact @johndoe 'xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
-wallet contact @kraken 'Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+dashwallet contact @johndoe 'xpubXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+dashwallet contact @kraken 'Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 ```
 
 ```txt
