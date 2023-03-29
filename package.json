@@ -1,6 +1,6 @@
 {
   "name": "dashwallet",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A more civilized wallet for a less civilized age",
   "main": "index.js",
   "bin": {
