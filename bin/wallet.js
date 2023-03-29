@@ -184,6 +184,13 @@ async function main() {
     return wallet;
   }
 
+  let donate = removeFlag(args, ["donate"]);
+  if (donate) {
+    args.push("--donate");
+    await pay(config, wallet, args);
+    return wallet;
+  }
+
   let showBalances = removeFlag(args, ["accounts", "balance", "balances"]);
   if (showBalances) {
     await getBalances(config, wallet, args);
@@ -608,6 +615,8 @@ async function verifyPrivateKey(privBytes) {
 //     using ALL coins, and send back the change
 /** @type {Subcommand} */
 async function pay(config, wallet, args) {
+  let donate = removeFlag(args, ["--donate"]);
+  let forceDonation = Cli.removeOption(args, ["--force-donation"]) ?? "";
   let dryRun = removeFlag(args, ["--dry-run"]);
   let coinList = removeFlagAndArg(args, ["--coins"]);
 
@@ -653,14 +662,28 @@ async function pay(config, wallet, args) {
 
   let utxos = await coinListToUtxos(wallet, coinList);
 
-  let address = await wallet.getNextPayAddr({ handle });
-  let dirtyTx = await wallet.createDirtyTx({
-    inputs: utxos,
-    output: {
+  let dirtyTx;
+  if (donate) {
+    let forceSats = parseFloat(forceDonation) || -1;
+    dirtyTx = await wallet.createDonationTx({
+      donate: donate,
+      forceDonation: forceSats,
+      inputs: utxos,
+      satoshis: satoshis,
+    });
+  } else {
+    let address = await wallet.getNextPayAddr({ handle });
+    let output = {
       address,
       satoshis,
-    },
-  });
+    };
+    dirtyTx = await wallet.createDirtyTx({
+      donate: donate,
+      forceDonation: forceDonation,
+      inputs: utxos,
+      output: output,
+    });
+  }
 
   console.info();
   if (dryRun) {
@@ -735,7 +758,8 @@ async function pay(config, wallet, args) {
 
   console.info();
 
-  let sentAmount = Wallet.toDash(dirtyTx.sent).toFixed(8).padStart(maxLen, " ");
+  let sentSats = dirtyTx.sent || 0;
+  let sentAmount = Wallet.toDash(sentSats).toFixed(8).padStart(maxLen, " ");
   console.info(`Paid to Recipient:       ${sentAmount}  (${handle})`);
 
   let feeAmount = Wallet.toDash(dirtyTx.fee).toFixed(8).padStart(maxLen, " ");
@@ -1273,7 +1297,11 @@ main()
       console.error(err.failedTx);
     }
     if (err.response) {
-      console.error(err.response);
+      let resp = err.response;
+      if (resp.toJSON) {
+        resp = resp.toJSON();
+      }
+      console.error(resp);
     }
     process.exit(1);
   });

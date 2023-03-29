@@ -817,6 +817,84 @@
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Number} opts.satoshis
+     * @param {Number} opts.forceDonation
+     * @param {Number} [opts.now] - ms
+     */
+    wallet.createDonationTx = async function ({
+      inputs,
+      satoshis = -1,
+      forceDonation = -1,
+      now = Date.now(),
+    }) {
+      inputs = await mustSelectInputs({ inputs, satoshis, now });
+
+      let totalAvailable = DashApi.getBalance(inputs);
+      let fees = DashTx.appraise({ inputs: inputs, outputs: [] });
+
+      if (satoshis > 0) {
+        let belowMaxFee = satoshis < fees.max;
+        if (belowMaxFee) {
+          let donationAmount = DashApi.toDash(satoshis);
+          let feeAmount = DashApi.toDash(fees.max);
+          throw new Error(
+            `'${donationAmount}' does not meet the minmium donation of ${feeAmount}`,
+          );
+        }
+
+        // Out of the dust and into the significant digits!
+        // 0.0001 0000
+        let tooGenerous = satoshis >= 10000;
+        if (tooGenerous) {
+          let isVeryGenerous = forceDonation === satoshis;
+          if (!isVeryGenerous) {
+            let donationAmount = DashApi.toDash(satoshis);
+            let err = new Error(
+              `rejecting possibly accidental donation of ${donationAmount}`,
+            );
+            //@ts-ignore
+            err.code = "E_TOO_KIND";
+            throw err;
+          }
+        }
+      }
+
+      let feeEstimate = Math.max(fees.max, satoshis);
+
+      let outputs = [];
+
+      let change = { address: "", satoshis: 0 };
+      change.satoshis =
+        totalAvailable + -satoshis + -feeEstimate + -DashTx.OUTPUT_SIZE;
+      let hasChange = change.satoshis > DashApi.DUST;
+
+      if (hasChange) {
+        let pathInfo = { handle: "main", usage: 1 };
+        change.address = await wallet._nextWalletAddr(pathInfo);
+        outputs.push(change);
+        feeEstimate += DashTx.OUTPUT_SIZE;
+      } else {
+        // Re: Dash Direct: we round in favor of the network (exact payments)
+        feeEstimate = totalAvailable + -satoshis;
+      }
+
+      let txInfoRaw = {
+        inputs: inputs,
+        outputs: outputs,
+        _DANGER_donate: true,
+      };
+      let keys = await wallet._utxosToPrivKeys(inputs);
+      let txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+
+      let summary = summarizeDonationTx(txInfo);
+      //@ts-ignore TODO type summary
+      await wallet._authDirtyTx({ summary, now });
+      return summary;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs]
      * @param {import('dashtx').TxOutput} opts.output
      * @param {Number} [opts.now] - ms
      */
@@ -825,7 +903,11 @@
       output,
       now = Date.now(),
     }) {
-      inputs = await mustSelectInputs({ inputs, output, now });
+      inputs = await mustSelectInputs({
+        inputs: inputs,
+        satoshis: output.satoshis,
+        now: now,
+      });
 
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [output] });
@@ -899,15 +981,15 @@
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
-     * @param {import('dashtx').TxOutput} opts.output
+     * @param {Number} opts.satoshis
      * @param {Number} [opts.now] - ms
      */
-    async function mustSelectInputs({ inputs, output, now = Date.now() }) {
+    async function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
       if (inputs) {
         return inputs;
       }
 
-      let fullTransfer = !output.satoshis;
+      let fullTransfer = !satoshis;
       if (fullTransfer) {
         let msg = `'satoshis' must be a positive number unless 'inputs' are specified`;
         let err = new Error(msg);
@@ -915,10 +997,10 @@
       }
 
       let coins = await wallet.utxos();
-      inputs = DashApi.selectOptimalUtxos(coins, output.satoshis);
+      inputs = DashApi.selectOptimalUtxos(coins, satoshis);
 
       if (!inputs.length) {
-        throw createInsufficientFundsError(coins, output.satoshis);
+        throw createInsufficientFundsError(coins, satoshis);
       }
 
       return inputs;
@@ -938,8 +1020,10 @@
      */
     wallet._authDirtyTx = async function ({ summary, now = Date.now() }) {
       let offset = 3000;
-      let recipAddr = summary.output.address || "";
-      safe.cache.addresses[recipAddr].sync_at = now + offset;
+      let recipAddr = summary.output?.address || "";
+      if (recipAddr) {
+        safe.cache.addresses[recipAddr].sync_at = now + offset;
+      }
       let recipAddrInfo = safe.cache.addresses[recipAddr];
       if (recipAddrInfo) {
         recipAddrInfo.sync_at = now + offset;
@@ -990,6 +1074,34 @@
 
       await config.store.save(safe.cache);
     };
+
+    /**
+     * @param {import('dashtx').TxInfoSigned} txInfo
+     */
+    function summarizeDonationTx(txInfo) {
+      let totalAvailable = 0;
+      for (let coin of txInfo.inputs) {
+        //@ts-ignore - our inputs are mixed with CoreUtxo
+        totalAvailable += coin.satoshis;
+      }
+
+      let fee = totalAvailable;
+
+      let changeSats = 0;
+      let change = txInfo.outputs[1];
+      if (change) {
+        changeSats = change.satoshis;
+      }
+      fee -= changeSats;
+
+      let summary = Object.assign(txInfo, {
+        total: totalAvailable,
+        fee: fee,
+        change: change,
+      });
+
+      return summary;
+    }
 
     /**
      * @param {import('dashtx').TxInfoSigned} txInfo
