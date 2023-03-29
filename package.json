@@ -9,7 +9,7 @@
   "files": [
     "index.js",
     "lib/",
-    "wallet.js"
+    "dashwallet.js"
   ],
   "scripts": {
     "bump": "npm version -m \"chore(release): bump to v%s\"",
