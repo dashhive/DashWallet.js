@@ -47,6 +47,22 @@
   const SATOSHIS = 100000000;
   Wallet.SATOSHIS = SATOSHIS;
 
+  const XPUBS_WALLET = "__XPUBS__";
+  const ADDRS_WALLET = "__ADDRS__";
+  const XPUB_CHAR_LEN = 111;
+  const ADDR_CHAR_LEN = 34;
+
+  let XPUB_VERSIONS = ["xpub", "tpub"];
+  let ADDR_VERSIONS = ["X", "Y"];
+
+  /** @param {Number} satoshis */
+  function toDustFixed(satoshis) {
+    let dashNum = satoshis / SATOSHIS;
+    let dash = dashNum.toFixed(8);
+    dash = dash.slice(0, 6) + " " + dash.slice(6);
+    return dash;
+  }
+
   /**
    * @template {Pick<CoreUtxo, "satoshis">} T
    * @param {Array<T>} utxos
@@ -134,11 +150,11 @@
   };
 
   /**
-   * @param {Number} duffs - DASH sastoshis
+   * @param {Number} satoshis
    * @returns {Number} - float
    */
-  DashApi.toDash = function (duffs) {
-    let floatBalance = parseFloat((duffs / DUFFS).toFixed(8));
+  DashApi.toDash = function (satoshis) {
+    let floatBalance = parseFloat((satoshis / DUFFS).toFixed(8));
     return floatBalance;
   };
 
@@ -170,9 +186,25 @@
    * @typedef DenomInfoPartial
    * @prop {Array<Number>} denoms
    * @prop {Number} stampsPerCoin
+   * @prop {Number} stampsRemaining
    * @prop {Number} fee
    * @prop {Boolean} transactable - if stampsPerCoin >= 2
    * @prop {Number} stampsNeeded - if stampsPerCoin < 2
+   */
+
+  /**
+   * Coin info + Utxo info
+   * @typedef {CoinInfo & CoreUtxo} UtxoCoinInfo
+   */
+
+  /**
+   * How we interpret a send amount
+   * @typedef SendInfo
+   * @prop {Number} satoshis
+   * @prop {Array<Number>} denoms
+   * @prop {Number} _lowFaceValue
+   * @prop {Number} faceValue
+   * @prop {Number} dustNeeded
    */
 
   /**
@@ -197,6 +229,8 @@
    * @prop {Safe} safe
    * @prop {Store} store
    * @prop {DashSightPartial} dashsight
+   * @prop {Array<Number>} denomAmounts - TODO move to settings
+   * @prop {Array<Number>} denomSatoshis - TODO move to settings
    */
 
   /**
@@ -219,7 +253,7 @@
 
   /**
    * @typedef WalletInstance
-   * @prop {Befriend} befriend
+   * @prop {Contact} contact
    * @prop {Sync} sync
    */
 
@@ -234,14 +268,16 @@
 
   /**
    * Add or generate and return (mutual) xpub key(s) for a contact
-   * @callback Befriend
-   * @param {BefriendOpts} opts
+   * @callback Contact
+   * @param {ContactOpts} opts
    * @returns {Promise<[String, PayWallet]>} - rxXPub, txXPub, txStaticAddr
    *
-   * @typedef BefriendOpts
+   * @typedef ContactOpts
    * @prop {String} handle
    * @prop {String} xpub - receive-only xpub key from friend
-   * @prop {String} addr - reusable address, e.g. for Coinbase
+   * @prop {String} address - reusable address, e.g. for Coinbase
+   * @prop {Boolean} [legacyPrefix] - to allow recovery of non-prefixed contacts
+   * @prop {String} [addr] - legacy property for address
    */
 
   /**
@@ -288,7 +324,8 @@
    * @prop {String?} archived_at - ISO Date
    *
    * @typedef WifInfo
-   * @prop {String} addr
+   * @prop {String} address
+   * @prop {String} [addr] - deprecated, use address
    * @prop {String} wif
    * @prop {String} created_at - ISO Date
    */
@@ -300,7 +337,8 @@
    * @prop {String} label
    * @prop {String} name
    * @prop {Number} priority
-   * @prop {String} addr - instead of xpub, e.g. for coinbase
+   * @prop {String} address - instead of xpub, e.g. for coinbase
+   * @prop {String} addr - deprecated, use address
    * @prop {String} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
@@ -348,24 +386,61 @@
     let wallet = {};
     let dashsight = config.dashsight;
 
+    // TODO: move to config
+    wallet.__DENOMS__ = Wallet.DENOM_SATS;
+    let __LAST_DENOM__ = wallet.__DENOMS__.length - 1;
+    wallet.__MIN_DENOM__ = Wallet.DENOM_SATS[__LAST_DENOM__];
+    wallet.__STAMP__ = 200;
+    wallet.__MIN_STAMPS__ = 2;
+
+    if (!config.denomAmounts?.length) {
+      config.denomAmounts = Wallet.DENOM_AMOUNTS;
+    }
+    config.denomSatoshis = amountsToSats(config.denomAmounts, []);
+
     if ("undefined" === typeof config.staletime) {
       config.staletime = 60 * 1000;
     }
 
-    // TODO rename addContactByXPub, addContactByAddr?
-    /** @type Befriend */
-    wallet.befriend = async function ({ handle, xpub, addr }) {
+    // TODO rename shareXPubWith, receiveXPubFrom, receiveAddrFrom?
+    /** @type {Contact} */
+    wallet.contact = async function ({
+      handle,
+      xpub,
+      address,
+      addr,
+      legacyPrefix,
+    }) {
+      address = address || addr || "";
       if (!handle) {
         throw new Error(`no 'handle' given`);
+      }
+
+      let specials = ["main", "wifs"];
+      let ihandle = handle.toLowerCase();
+      let isSpecial = specials.includes(ihandle);
+      if (isSpecial) {
+        throw new Error(`${handle} may not be used as a contact name`);
+      }
+
+      if (!legacyPrefix) {
+        let prefixes = ["#", "@"];
+        let prefix = handle[0];
+        let validPrefix = prefixes.includes(prefix);
+        if (!validPrefix) {
+          throw new Error(
+            `contact names should start with '#' (ex: '#john') for local contacts, or '@' for live-wallet/self-published contacts (ex: '@john.dev'), not '${handle}'`,
+          );
+        }
       }
 
       let safe = config.safe;
 
       /** @type {PayWallet} */
       let txWallet;
-      let hasAddr = xpub || addr;
+      let hasAddr = xpub || address;
       if (hasAddr) {
-        txWallet = await _getPayWallet(handle, xpub, addr);
+        txWallet = await _getOrCreateWallet(handle, xpub, address);
         // most recently added will sort first;
         txWallet.priority = Date.now();
         await config.store.save(safe.payWallets);
@@ -419,14 +494,15 @@
       let selfXPub = await DashHd.toXPub(xprvKey);
       return [selfXPub, txWallet];
     };
+    wallet.befriend = wallet.contact;
 
     /**
      * @param {String} handle - contact's handle
      * @param {String} xpub
-     * @param {String} addr
+     * @param {String} address
      * @returns {Promise<PayWallet>}
      */
-    async function _getPayWallet(handle, xpub, addr) {
+    async function _getOrCreateWallet(handle, xpub, address) {
       if (xpub) {
         await Wallet.assertXPub(xpub);
       }
@@ -442,8 +518,8 @@
             return xpub === wallet.xpub;
           }
 
-          if (addr.length > 0) {
-            return addr === wallet.addr;
+          if (address.length > 0) {
+            return address === wallet.address || wallet.addr;
           }
 
           return false;
@@ -452,7 +528,7 @@
         txWallet = Wallet.generatePayWallet({
           handle: handle,
           xpub: xpub,
-          addr: addr,
+          address: address,
         });
         for (let i = 1; ; i += 1) {
           if (!safe.payWallets[`${handle}:${i}`]) {
@@ -465,6 +541,59 @@
     }
 
     /**
+     * @typedef WalletAccount
+     * @prop {Number} faceValue - spendable amount
+     * @prop {Number} _satoshis - spendable + dust amounts
+     * @prop {Array<CoreUtxo>} utxos
+     */
+
+    /**
+     * @returns {Object<String, WalletAccount>}
+     */
+    wallet.accounts = function () {
+      /** @type {Object<String, Array<Required<MiniUtxo>>>} */
+      let accounts = {};
+
+      let addrs = Object.keys(safe.cache.addresses);
+      for (let addr of addrs) {
+        let addrInfo = safe.cache.addresses[addr];
+
+        let isSpendable = hasWif(addrInfo);
+        if (!isSpendable) {
+          continue;
+        }
+
+        let accountName = addrInfo.wallet;
+        if (!accounts[accountName]) {
+          accounts[accountName] = {
+            faceValue: 0,
+            _satoshis: 0,
+            utxos: [],
+          };
+        }
+        let account = accounts[accountName];
+
+        let isLooseWif = hasLooseWif(addrInfo);
+        if (isLooseWif) {
+          // ignore wifs
+        }
+
+        for (let utxo of addrInfo.utxos) {
+          let _utxo = Object.assign({ address: addr }, utxo);
+          account.utxos.push(_utxo);
+
+          // TODO maybe denominate and break change for more accurate face value
+          //let outputInfo = Wallet._denominateCoins(d, inputInfos, breakChange);
+          let coinInfo = Wallet._parseCoinInfo(wallet, _utxo.satoshis);
+          account.faceValue += coinInfo.faceValue;
+          account._satoshis += _utxo.satoshis;
+        }
+      }
+
+      return accounts;
+    };
+
+    /**
      * Show balances of addresses for which we have the private keys (WIF)
      * (don't forget to sync first!)
      * @returns {Promise<Object.<String, Number>>}
@@ -474,11 +603,13 @@
       let balances = {};
 
       Object.values(safe.cache.addresses).forEach(function (addrInfo) {
-        if (!addrInfo.hdpath) {
+        let isSpendable = hasWif(addrInfo);
+        if (!isSpendable) {
           return;
         }
 
-        if ("*" === addrInfo.hdpath) {
+        let isLooseWif = hasLooseWif(addrInfo);
+        if (isLooseWif) {
           // ignore wifs
         }
 
@@ -505,8 +636,8 @@
     /**
      * @param {Object} opts
      * @param {Array<String>} opts.wifs
-     * @param {Number} opts.now - ms since epoch (e.g. Date.now())
-     * @param {Number} opts.staletime - when to refresh
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - when to refresh
      * @returns {Promise<Array<WalletAddress>>}
      * TODO - multiuse: true
      */
@@ -521,10 +652,13 @@
         let addr = await DashKeys.wifToAddr(wif);
         let addrInfo = safe.cache.addresses[addr];
 
-        await indexWifAddr(addr, now, staletime);
+        await indexNonHdAddr("wifs", addr, now, staletime);
 
         addrInfos.push(
-          Object.assign({ addr: addr }, safe.cache.addresses[addr]),
+          Object.assign(
+            { address: addr, addr: addr },
+            safe.cache.addresses[addr],
+          ),
         );
 
         // TODO force duplicate option? (for partially-synced wallets)
@@ -544,6 +678,7 @@
         if (!exists) {
           // the first "wifs" is the name of the wallet
           safe.privateWallets.wifs.wifs.push({
+            address: addr,
             addr: addr,
             wif: wif,
             created_at: new Date().toISOString(),
@@ -558,33 +693,42 @@
     };
 
     /**
-     * @returns {Promise<Array<CoreUtxo>>}
+     * @returns {Array<CoreUtxo>}
      */
-    wallet.utxos = async function () {
+    wallet.utxos = function () {
       /** @type {Array<Required<MiniUtxo>>} */
       let utxos = [];
 
-      Object.keys(safe.cache.addresses).forEach(function (addr) {
+      let addrs = Object.keys(safe.cache.addresses);
+      for (let addr of addrs) {
         let addrInfo = safe.cache.addresses[addr];
-        if (!addrInfo.hdpath) {
-          return;
+        let isSpendable = hasWif(addrInfo);
+        if (!isSpendable) {
+          continue;
         }
 
         if ("*" === addrInfo.hdpath) {
           // ignore wifs
         }
 
-        addrInfo.utxos.forEach(
-          /** @param {MiniUtxo} utxo */
-          function (utxo) {
-            let _utxo = Object.assign({ address: addr }, utxo);
-            utxos.push(_utxo);
-          },
-        );
-      });
+        for (let utxo of addrInfo.utxos) {
+          let _utxo = Object.assign({ address: addr }, utxo);
+          utxos.push(_utxo);
+        }
+      }
 
       return utxos;
     };
+
+    /** @param {WalletAddress} addrInfo */
+    function hasWif(addrInfo) {
+      return !!addrInfo.hdpath;
+    }
+
+    /** @param {WalletAddress} addrInfo */
+    function hasLooseWif(addrInfo) {
+      return "*" === addrInfo.hdpath;
+    }
 
     /**
      * Find the address that matches the prefix.
@@ -613,10 +757,12 @@
       /** @type {Array<Required<WalletAddress>>} */
       let addrInfos = [];
 
-      if (34 === addrPrefix.length) {
+      if (ADDR_CHAR_LEN === addrPrefix.length) {
         let addrInfo = safe.cache.addresses[addrPrefix];
         if (addrInfo) {
-          addrInfos.push(Object.assign({ addr: addrPrefix }, addrInfo));
+          addrInfos.push(
+            Object.assign({ address: addrPrefix, addr: addrPrefix }, addrInfo),
+          );
         }
         return addrInfos;
       }
@@ -631,7 +777,7 @@
 
       addrs.forEach(function (addr) {
         let addrInfo = safe.cache.addresses[addr];
-        addrInfos.push(Object.assign({ addr: addr }, addrInfo));
+        addrInfos.push(Object.assign({ address: addr, addr: addr }, addrInfo));
       });
 
       return addrInfos;
@@ -661,26 +807,10 @@
       // TODO filter out archived wallets?
       let txws = Object.values(safe.privateWallets)
         .filter(function (wallet) {
-          return wallet.contact === handle;
+          return wallet.contact === handle || wallet.name === handle;
         })
         .sort(wallet._sort);
       return txws;
-    };
-
-    /**
-     * @param {Object} opts
-     * @param {String} opts.handle - a private wallet name
-     * @param {Number} opts.usage - 0 for deposit, 1 for change
-     * @returns {Promise<String>} - pay address
-     */
-    wallet._nextWalletAddr = async function ({ handle, usage }) {
-      let count = 1;
-      let addrsInfo = await wallet._nextWalletAddrs({
-        handle,
-        usage,
-        count,
-      });
-      return addrsInfo.addrs[0];
     };
 
     /**
@@ -692,17 +822,39 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.handle - a private wallet name
-     * @param {Number} opts.usage - 0 for deposit, 1 for change
+     * @param {import('dashhd').HDXKey} opts.xKey
      * @param {Number} opts.count - how many next addresses
-     * @returns {Promise<NextInfo>} - info about next addresses
+     * @param {Number} opts.offset - where to start
+     * @returns {Promise<Array<String>>} - next n unused addresses
      */
-    wallet._nextWalletAddrs = async function ({ handle, usage, count = 1 }) {
+    wallet._nextWalletAddrs = async function ({ xKey, count = 1, offset }) {
+      let addrs = [];
+      for (let i = 0; i < count; i += 1) {
+        let index = offset + i;
+
+        let addressKey = await deriveAddress(xKey, index);
+        let addr = await DashHd.toAddr(addressKey.publicKey);
+        addrs.push(addr);
+      }
+      return addrs;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {String} opts.hdpath
+     * @returns {Promise<import('dashhd').HDXKey>}
+     */
+    wallet._recoverXPrv = async function ({ handle, hdpath }) {
       let ws = await wallet.findPrivateWallets({ handle });
-      let w = ws[0] || safe.privateWallets.main;
+      if (!ws.length) {
+        throw new Error(`could not find wallet or account for '${handle}'`);
+      }
+      ws.forEach(function (w) {
+        _transitionPhrase(w); // TODO remove
+      });
 
-      _transitionPhrase(w); // TODO remove
-
+      let w = ws[0];
       let hasRecoveryPhrase = w.phrase?.length > 0;
       if (!hasRecoveryPhrase) {
         throw new Error(
@@ -714,55 +866,236 @@
       let seed = await DashPhrase.toSeed(w.phrase, salt);
       let walletKey = await DashHd.fromSeed(seed);
 
-      let account = 0; // main
-      let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
-
       /** @type {import('dashhd').HDXKey} */
       let xprvKey = await DashHd.derivePath(walletKey, hdpath);
 
-      let now = Date.now();
-      let nextIndex = await indexPayAddrs(w.name, xprvKey, hdpath, now);
-      await config.store.save(safe.cache);
-
-      let addrs = [];
-      for (let i = 0; i < count; i += 1) {
-        let index = nextIndex + i;
-
-        let addressKey = await deriveAddress(xprvKey, index);
-        let addr = await DashHd.toAddr(addressKey.publicKey);
-        addrs.push(addr);
-      }
-      return { start: nextIndex, addr: addrs[0], addrs: addrs };
+      return xprvKey;
     };
 
     /**
      * @param {Object} opts
      * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
      */
-    wallet.createNextPayAddr = async function ({ handle }) {
-      let ws = await wallet.findPayWallets({ handle });
-      let payWallet = ws[0];
+    wallet.getNextPayAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {
+      let walletName;
+      let xpub;
 
-      if (payWallet.addr) {
-        return {
-          addr: payWallet.addr,
-          index: null,
-        };
+      let isAddrLen = handle.length === ADDR_CHAR_LEN;
+      let isXPubLen = handle.length === XPUB_CHAR_LEN;
+      let wallets = await wallet.findPayWallets({ handle });
+      let payWallet = wallets?.[0]; // newest is first
+      if (payWallet?.name) {
+        walletName = payWallet.name;
+        xpub = payWallet.xpub;
+      } else if (isXPubLen) {
+        let prefix = handle.slice(0, 4);
+        let isValid = XPUB_VERSIONS.includes(prefix);
+        if (isValid) {
+          walletName = XPUBS_WALLET;
+          xpub = handle;
+        }
+      }
+      if (xpub) {
+        let addrsInfo = await wallet._getNextPayAddrs({
+          walletName: payWallet.name,
+          xpub: payWallet.xpub,
+          count: count,
+          now: now,
+        });
+        //@ts-ignore
+        addrsInfo.xpub = xpub;
+        return addrsInfo;
       }
 
-      let xpubKey = await DashHd.fromXKey(payWallet.xpub);
+      if (isAddrLen) {
+        if (count !== 1) {
+          throw new Error(
+            `can't get ${count} addresses from single address for '${handle}'`,
+          );
+        }
 
-      let now = Date.now();
-      let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
+        let addrInfo = await indexPayAddr(
+          ADDRS_WALLET,
+          handle,
+          "*",
+          -1,
+          now,
+          staletime,
+        );
+
+        if (addrInfo.txs.length) {
+          if (!allowReuse) {
+            throw createReuseError();
+          }
+        }
+
+        let addrsInfo = { index: -1, addresses: [handle] };
+        return addrsInfo;
+      }
+      console.log("wallets.length", wallets.length);
+
+      let limit = count;
+      let addrsInfo = await wallet._getNextLooseAddrs({
+        wallets,
+        limit,
+        now,
+        staletime,
+        allowReuse,
+      });
+      let lossyCount = addrsInfo?.addresses?.length || 0;
+      let hasAddrs = count === lossyCount;
+      if (!hasAddrs) {
+        let err = new Error(
+          `there is no xpub, and only ${lossyCount} (need ${count}) lossy addresses associated with '${handle}'`,
+        );
+        //@ts-ignore
+        err.code = "E_NO_PAY_ADDR";
+        throw err;
+      }
+
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} [opts.walletName]
+     * @param {String} opts.xpub
+     * @param {Number} opts.count
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
+     */
+    wallet._getNextXPubPayAddrs = async function ({
+      xpub,
+      count = 1,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {};
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.walletName
+     * @param {String} opts.xpub
+     * @param {Number} opts.count
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
+     */
+    wallet._getNextPayAddrs = async function ({
+      walletName = XPUBS_WALLET,
+      xpub,
+      count = 1,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {
+      let xKey = await DashHd.fromXKey(xpub);
+
+      let hdpath = ""; // TODO include in xKey
+      let offset = await indexPayAddrs(walletName, xKey, hdpath, now);
       await config.store.save(safe.cache);
 
-      let addressKey = await deriveAddress(xpubKey, nextIndex);
-      let addr = await DashHd.toAddr(addressKey.publicKey);
-      return {
-        addr,
-        index: nextIndex,
-      };
+      let payAddrs = await wallet._nextWalletAddrs({
+        xKey,
+        offset,
+        count,
+      });
+      await config.store.save(safe.cache);
+
+      return { index: offset, addresses: payAddrs };
     };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<PayWallet>} opts.wallets
+     * @param {Number} [opts.limit]
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
+     */
+    wallet._getNextLooseAddrs = async function ({
+      wallets,
+      limit,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {
+      let payWallet = wallets[0]; // newest is first
+      if (!payWallet?.addr) {
+        return null;
+      }
+
+      // get all not-known-to-be-used addrs
+      let addrs = [];
+      for (let w of wallets) {
+        let addr = w.address || w.addr;
+        let addrInfo = safe.cache.addresses[addr];
+        if (!addrInfo) {
+          addrInfo = Wallet.generateAddress({
+            wallet: w.name,
+            hdpath: "*",
+            index: -1,
+          });
+          safe.cache.addresses[addr] = addrInfo;
+        }
+        let used = isUsed(addrInfo);
+        if (!used) {
+          // reverse to oldest to newest
+          addrs.unshift(addr);
+        }
+      }
+
+      // check if they have been used, just recently
+      let available = [];
+      let online = true;
+      if (online) {
+        for (let addr of addrs) {
+          let addrInfo = safe.cache.addresses[addr];
+          //let addrInfo = await wallet._updateAddrInfo(addr, now, staletime);
+          let used = isUsed(addrInfo);
+          if (!used) {
+            available.push(addr);
+          }
+        }
+      }
+
+      if (!available.length) {
+        if (!allowReuse) {
+          throw createReuseError();
+        }
+        available.push(payWallet.addr);
+      }
+
+      let addresses = available.slice(0, limit);
+
+      return { index: -1, addresses: addresses };
+    };
+
+    /** @param {WalletAddress} addrInfo */
+    function isUsed(addrInfo) {
+      return addrInfo.txs?.length > 0;
+    }
+
+    function createReuseError() {
+      let err = new Error(
+        `no unused addresses are available (set 'allowReuse' to use the most recent)`,
+      );
+      //@ts-ignore
+      err.code = `E_NO_UNUSED_ADDR`;
+
+      return err;
+    }
 
     /**
      * @param {import('dashhd').HDXKey} xKey
@@ -779,47 +1112,548 @@
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} opts.count
+     * @param {Number} opts.now
      */
-    wallet.createNextReceiveAddr = async function ({ handle, count = 1 }) {
+    wallet.getNextChangeAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+    }) {
+      let addrsInfo = await wallet._getNextXPrvAddrs({
+        handle,
+        count,
+        usage: 1,
+        now,
+      });
+
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} opts.now
+     */
+    wallet.getNextReceiveAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+    }) {
+      let addrsInfo = await wallet._getNextXPrvAddrs({
+        handle,
+        count,
+        usage: 0,
+        now,
+      });
+
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} opts.now
+     * @param {Number} opts.usage
+     */
+    wallet._getNextXPrvAddrs = async function ({ handle, count, usage, now }) {
       let ws = await wallet.findPrivateWallets({ handle });
-      let privateWallet = ws[0];
+      if (!ws.length) {
+        throw new Error(`could not find wallet or account for '${handle}'`);
+      }
+      let privWallet = ws[0];
 
       ws.forEach(_transitionPhrase); // TODO remove
 
-      if (!privateWallet.phrase?.length) {
+      if (!privWallet.phrase?.length) {
         // TODO generate new WIF
-        throw new Error("not implemented");
+        throw new Error("generate new WIF not implemented");
       }
 
-      // TODO get back NextIndex
-      let receiveAddrsInfo = await wallet._nextWalletAddrs({
-        handle: handle,
-        usage: 0,
-        count: count,
+      let account = 0; // main
+      let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+      let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+      let offset = await indexPayAddrs(privWallet.name, xKey, hdpath, now);
+      await config.store.save(safe.cache);
+
+      let receiveAddrs = await wallet._nextWalletAddrs({
+        xKey,
+        count,
+        offset,
       });
       await config.store.save(safe.cache);
 
-      return receiveAddrsInfo;
+      let xpub = await DashHd.toXPub(xKey);
+      return { index: offset, addresses: receiveAddrs, xpub: xpub };
     };
 
     /**
      * Send with change back to main wallet
      * @param {Object} opts
      * @param {String} opts.handle
+     * @param {Boolean} [opts.allowReuse] - allow non-hd addresses
+     * @param {Number} opts.satoshis - duffs/satoshis
+     * @param {Array<CoreUtxo>} [opts.selectedCoins]
+     * @param {Array<CoreUtxo>} [opts.availableCoins]
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - ms old after which to sync
+     * @param {Boolean} [opts.breakChange] - Ex: exact 3.00000000 is only worth 2.999 and must be split into 7 coins instead of 1
+     */
+    wallet.send = async function ({
+      handle,
+      allowReuse = false,
+      satoshis,
+      selectedCoins = [],
+      availableCoins = [],
+      now = Date.now(),
+      staletime = config.staletime,
+      breakChange = false,
+    }) {
+      // TODO XXXX
+
+      // Mechanisms
+      // - Cash-like transfer of coins
+      // - Send face value to multiple (or single no-change)
+      // - Send exact-ish amount to multiple (or single, no-change)
+
+      let utxos = selectedCoins;
+
+      let fullTransfer = !satoshis;
+      if (fullTransfer) {
+        let selection = wallet.useAllCoins({ utxos, breakChange });
+        return selection;
+      }
+
+      let hasSelectedCoins = selectedCoins.length > 0;
+      if (!hasSelectedCoins) {
+        utxos = availableCoins;
+      }
+
+      let d = wallet;
+      let output = Wallet._parseSendInfo(d, satoshis);
+
+      let selection = wallet.useMatchingCoins({
+        output,
+        utxos,
+        breakChange,
+      });
+
+      console.log(selection);
+      console.error("not implemented");
+      process.exit(1);
+      return;
+
+      let count = 1;
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle,
+        allowReuse,
+        count,
+        now,
+        staletime,
+      });
+      // TODO lookup addresses here(?)
+
+      // ideal based on amount
+      // hit exact target
+
+      // get the ideal number of coins
+      let tx = await wallet.createTx({
+        inputs: utxos,
+        addresses: addrsInfo.addresses,
+        satoshis: satoshis,
+      });
+
+      let result = await dashsight.instantSend(tx.transaction).catch(
+        /** @param {Error} err */
+        function (err) {
+          //@ts-ignore
+          err.failedTx = tx.transaction;
+          //@ts-ignore
+          err.failedUtxos = tx.inputs;
+          throw err;
+        },
+      );
+      //@ts-ignore TODO type summary
+      await wallet.captureTx({ summary: tx, now });
+
+      return Object.assign({ response: result }, tx);
+    };
+
+    /**
+     * Send with change back to main wallet
+     * @template {DenomInfo} D
+     * @param {Object} opts
+     * @param {SendInfo} opts.output - duffs/satoshis
+     * @param {Array<CoreUtxo>} [opts.utxos]
+     * @param {Boolean} [opts.breakChange] - Ex: exact 3.00000000 is only worth 2.999 and must be split into 7 coins instead of 1
+     * @return {CoinSelection<D>}
+     */
+    wallet.useMatchingCoins = function ({
+      output,
+      utxos = [],
+      breakChange = false,
+    }) {
+      let d = wallet;
+
+      if (!output?.denoms?.length) {
+        throw new Error("can't send 0.000");
+      }
+
+      let utxoInfos = Wallet._parseUtxosInfo(d, utxos);
+
+      let denomInfos = [];
+      for (let utxoInfo of utxoInfos) {
+        // considering each utxo individually (rather than collectively)
+        // because we haven't selected them yet
+        let denomInfo = Wallet._denominateCoin(d, utxoInfo, breakChange);
+        denomInfos.push(denomInfo);
+      }
+
+      let cashLikeInfo = Wallet._pairInputsToOutputs(d, output, denomInfos);
+
+      let selection = {
+        inputs: cashLikeInfo.inputs,
+        output: cashLikeInfo.output,
+        change: cashLikeInfo.change,
+      };
+
+      return selection;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>} opts.utxos
+     * @param {Boolean} opts.breakChange
+     */
+    wallet.useAllCoins = function ({ utxos, breakChange }) {
+      let hasSelectedCoins = utxos.length > 0;
+      if (!hasSelectedCoins) {
+        let err = wallet._createNeedsInputsError();
+        throw err;
+      }
+
+      let d = wallet;
+      let inputInfos = Wallet._parseUtxosInfo(d, utxos);
+      let outputInfo = Wallet._denominateCoins(d, inputInfos, breakChange);
+      if (!outputInfo.transactable) {
+        throw wallet._createNonTransactableError(outputInfo);
+      }
+      let selection = {
+        inputs: inputInfos,
+        output: outputInfo,
+        change: null,
+      };
+
+      return selection;
+    };
+
+    /**
+     * @template {DenomInfo} D
+     * @typedef CoinSelection
+     * @prop {Array<D>} inputs
+     * @prop {DenomInfo} output
+     * @prop {DenomInfo?} change
+     */
+
+    /**
+     * @param {DenomInfo} outputInfo
+     */
+    wallet._createNonTransactableError = function (outputInfo) {
+      let d = wallet;
+
+      let satsNeeded = outputInfo.stampsNeeded * d.__STAMP__;
+      satsNeeded += d.__STAMP__;
+
+      let maxDenoms = satsNeeded / d.__MIN_DENOM__;
+      maxDenoms = Math.ceil(maxDenoms);
+
+      let maxSats = maxDenoms * d.__MIN_DENOM__;
+
+      let dashInput = DashApi.toDash(outputInfo.satoshis);
+      let dashNeeded = DashApi.toDash(satsNeeded);
+      let maxDash = DashApi.toDash(maxSats);
+
+      let err = new Error(
+        `cannot spend Đ${dashInput} without breaking change: add another coin of between Đ${dashNeeded} and Đ${maxDash}, or break change first`,
+      );
+      //@ts-ignore
+      err.code = "E_BREAK_CHANGE";
+      //@ts-ignore
+      err.outputInfo = outputInfo;
+      //@ts-ignore
+      err.satoshisNeeded = satsNeeded;
+      //@ts-ignore
+      err.minDenom = d.__MIN_DENOM__;
+
+      return err;
+    };
+
+    wallet._createNeedsInputsError = function () {
+      let msg = `'satoshis' must be a positive number unless 'inputs' are specified`;
+      let err = new Error(msg);
+      //@ts-ignore
+      err.code = "E_BAD_REQUEST";
+      //@ts-ignore
+      err.status = 400;
+
+      return err;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs] - which inputs to use / send
+     * @param {Array<String>} [opts.addresses] - which addresses to use
+     * @param {Number} [opts.satoshis] - how much to send
+     * @param {Number} [opts.now] - ms
+     * @param {Number} [opts.staletime]
+     * x@param {Array<import('dashtx').TxOutput>} opts.outputs
+     */
+    wallet.createTx = async function ({
+      inputs,
+      addresses,
+      satoshis,
+      now,
+      staletime,
+    }) {
+      let txInfoRaw = await wallet.denominate({
+        inputs,
+        addresses,
+        satoshis,
+        now,
+        staletime,
+      });
+      if (!txInfoRaw.inputs) {
+        let err = new Error(`inconceivable`);
+        //@ts-ignore
+        err.code = "INCONCEIVABLE";
+        throw err;
+      }
+
+      let dashTx = DashTx.create();
+      let keys;
+      try {
+        keys = await wallet._utxosToPrivKeys(txInfoRaw.inputs);
+      } catch (e) {
+        throw e;
+      }
+      if (!keys) {
+        return;
+      }
+
+      let txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+      return txInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<String>} [opts.addresses]
+     * @param {Number} [opts.satoshis]
+     * x@param {Array<import('dashtx').TxOutput>} opts.outputs
+     * @param {Number} [opts.now] - ms
+     * @param {Number} [opts.staletime]
+     */
+    wallet.denominate = async function ({
+      inputs,
+      addresses,
+      satoshis,
+      now,
+      staletime,
+    }) {
+      // TODO try first to hit the target output values
+      inputs = mustSelectInputs({
+        inputs: inputs,
+        satoshis: satoshis,
+        now: now,
+      });
+      let fauxTxos = inputs;
+      //let fauxTxos = await inputListToFauxTxos(wallet, inputList);
+      let balance = Wallet.getBalance(fauxTxos);
+
+      // TODO XXX check determine if it's already denominated
+      // - last 5 digits mod 200 with no leftover
+      //   - 0.000x xxxx % 200 === 0
+      // - last 5 digits are over 2 * 200
+      //   - 0.000x xxxx > 400
+      // - has exactly one significant digit of denominated value
+      //   - xxxx.xxx0 0000
+
+      // 0.0001 0000
+      let dusty = 10000;
+
+      // can give at least 3 txs to at least 2 coins
+      let sixFees = 1200;
+
+      if (balance <= dusty) {
+        let balanceStr = toDustFixed(balance);
+        let err = new Error(`can't redenominate ${balanceStr}`);
+        //@ts-ignore
+        err.code = "E_NO_DENOM";
+        //@ts-ignore
+        err.satoshis = balance;
+        throw err;
+      }
+
+      let denoms = config.denomAmounts.map(function (v) {
+        return v * SATOSHIS;
+      });
+
+      /** @type {Object<String, String>} */
+      let denomStrs = {};
+      for (let denom of denoms) {
+        denomStrs[denom] = toDustFixed(denom);
+      }
+
+      let dust = balance - sixFees;
+      /** @type {Object<String, Number>} */
+      let newCoins = {};
+      let outputs = [];
+      for (let denom of denoms) {
+        let n = dust / denom;
+        n = Math.floor(n);
+        if (!n) {
+          continue;
+        }
+
+        // less fee estimate per each output
+        dust = dust % denom;
+        let denomStr = denomStrs[denom];
+        newCoins[denomStr] = n;
+        for (let i = 0; i < n; i += 1) {
+          let partialOut = {
+            satoshis: denom,
+          };
+          outputs.push(partialOut);
+        }
+      }
+      dust += sixFees;
+      let cost = dust;
+
+      console.log(newCoins);
+
+      let fees = DashTx.appraise({ inputs: inputs, outputs: outputs });
+      let feeStr = toDustFixed(fees.mid);
+
+      if (dust < fees.mid) {
+        throw new Error("dust < fee recalc not implemented");
+      }
+
+      dust -= fees.mid;
+
+      let stampSats = 200;
+      let numStamps = dust / stampSats;
+      let dustDust = dust % 200;
+      numStamps = Math.floor(numStamps);
+      if (numStamps < outputs.length) {
+        throw new Error("numStamps < numOutputs recalc not implemented");
+      }
+
+      let stampsExtra = numStamps % outputs.length;
+      let stampsEach = numStamps / outputs.length;
+      stampsEach = Math.floor(stampsEach);
+
+      outputs.forEach(function (output) {
+        output.satoshis += stampsEach * stampSats;
+      });
+      outputs
+        .slice()
+        .reverse()
+        .some(function (output, i) {
+          if (stampsExtra === 0) {
+            return true;
+          }
+
+          output.satoshis += stampSats;
+          stampsExtra -= 1;
+        });
+
+      console.info(outputs);
+      console.info(
+        `Fee:  ${feeStr}  (${inputs.length} inputs, ${outputs.length} outputs)`,
+      );
+      console.info(
+        `Stamps: ${numStamps} x 0.0000 0200 (${stampsEach} per output)`,
+      );
+
+      let dustStr = toDustFixed(dust);
+      let dustDustStr = toDustFixed(dustDust);
+      console.info(`Dust: ${dustDustStr} (${dustStr})`);
+      console.info(``);
+
+      let costStr = toDustFixed(cost);
+      console.info(`Cost to Denominate: ${costStr}`);
+      console.info(``);
+
+      // TODO handle should link to hash of seed and account # of other wallet
+      // TODO deposit into coinjoin account
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle: "main",
+        count: outputs.length,
+      });
+      if (!addrsInfo) {
+        throw new Error(
+          `[Sanity Fail] cannot generate addresses for 'main' account`,
+        );
+      }
+
+      // TODO use knuthShuffle or explicit crypto random
+      let payAddresses = addrsInfo.addresses.slice(0);
+      fauxTxos.sort(Math.random);
+      outputs.sort(Math.random);
+      for (let output of outputs) {
+        output = Object.assign(output, {
+          address: payAddresses.pop(),
+        });
+      }
+
+      for (let output of outputs) {
+        //@ts-ignore TODO bad export
+        let pkh = await DashKeys.addrToPkh(output.address);
+        //@ts-ignore TODO bad export
+        let pkhHex = DashKeys.utils.bytesToHex(pkh);
+        Object.assign(output, { pubKeyHash: pkhHex });
+      }
+
+      let txInfoRaw = {
+        inputs: fauxTxos,
+        outputs: outputs,
+      };
+      return txInfoRaw;
+    };
+
+    /**
+     * Send with change back to main wallet
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Boolean} [opts.allowReuse] - allow non-hd addresses
      * @param {Number} opts.satoshis - duffs/satoshis
      * @param {Array<CoreUtxo>?} [opts.utxos]
      * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - ms old after which to sync
      */
-    wallet.pay = async function ({
+    // TODO "exposedSend" suggested by onetime
+    wallet.sendWithFingerprint = async function ({
       handle,
+      allowReuse = false,
       satoshis,
       utxos,
       now = Date.now(),
+      staletime = config.staletime,
     }) {
-      let address = await wallet.getNextPayAddr({ handle, now });
+      let count = 1;
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle,
+        allowReuse,
+        count,
+        now,
+        staletime,
+      });
+
       let dirtyTx = await wallet.createDirtyTx({
         inputs: utxos,
-        output: { address, satoshis },
+        output: { address: addrsInfo.addresses[0], satoshis: satoshis },
       });
 
       let result = await dashsight.instantSend(dirtyTx.transaction).catch(
@@ -836,6 +1670,30 @@
       await wallet.captureDirtyTx({ summary: dirtyTx, now });
 
       return Object.assign({ response: result }, dirtyTx);
+    };
+
+    /**
+     * DEPRECATED, use wallet.send (renamed)
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.satoshis - duffs/satoshis
+     * @param {Array<CoreUtxo>} [opts.utxos]
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     */
+    wallet.pay = async function ({
+      handle,
+      satoshis,
+      utxos,
+      now = Date.now(),
+    }) {
+      console.warn("wallet.pay is deprecated, use wallet.send");
+      let result = await wallet.send({
+        handle: handle,
+        satoshis: satoshis,
+        selectedCoins: utxos,
+        now: now,
+      });
+      return result;
     };
 
     /**
@@ -878,7 +1736,7 @@
       forceDonation = -1,
       now = Date.now(),
     }) {
-      inputs = await mustSelectInputs({ inputs, satoshis, now });
+      inputs = mustSelectInputs({ inputs, satoshis, now });
 
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [] });
@@ -920,8 +1778,21 @@
       let hasChange = change.satoshis > DashApi.DUST;
 
       if (hasChange) {
-        let pathInfo = { handle: "main", usage: 1 };
-        change.address = await wallet._nextWalletAddr(pathInfo);
+        let count = 1;
+        let handle = "main";
+        let account = 0; // main
+        let usage = 1;
+
+        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+        let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+        // XXX is handle always name? (it is for main)
+        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
+        await config.store.save(safe.cache);
+
+        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
+
+        change.address = addrs[0];
         outputs.push(change);
         feeEstimate += DashTx.OUTPUT_SIZE;
       } else {
@@ -943,6 +1814,7 @@
       return summary;
     };
 
+    // XXX pass in known-good change addrs
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
@@ -954,7 +1826,7 @@
       output,
       now = Date.now(),
     }) {
-      inputs = await mustSelectInputs({
+      inputs = mustSelectInputs({
         inputs: inputs,
         satoshis: output.satoshis,
         now: now,
@@ -982,8 +1854,21 @@
       let hasChange = change.satoshis > DashApi.DUST;
 
       if (hasChange) {
-        let pathInfo = { handle: "main", usage: 1 };
-        change.address = await wallet._nextWalletAddr(pathInfo);
+        let count = 1;
+        let handle = "main";
+        let account = 0; // main
+        let usage = 1;
+
+        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+        let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+        // TODO should be name, not handle (though they're the same for main)
+        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
+        await config.store.save(safe.cache);
+
+        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
+
+        change.address = addrs[0];
         outputs.push(change);
         feeEstimate += DashTx.OUTPUT_SIZE;
       } else {
@@ -1032,10 +1917,10 @@
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
-     * @param {Number} opts.satoshis
+     * @param {Number} [opts.satoshis]
      * @param {Number} [opts.now] - ms
      */
-    async function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
+    function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
       if (inputs) {
         return inputs;
       }
@@ -1047,7 +1932,7 @@
         throw err;
       }
 
-      let coins = await wallet.utxos();
+      let coins = wallet.utxos();
       inputs = DashApi.selectOptimalUtxos(coins, satoshis);
 
       if (!inputs.length) {
@@ -1301,13 +2186,14 @@
       return txInfo;
     }
 
+    // TODO nix
     /**
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} [opts.now] - ms
      */
     wallet.getNextPayAddr = async function ({ handle, now = Date.now() }) {
-      let isPayAddr = _isPayAddr(handle);
+      let isPayAddr = Wallet.isAddrLike(handle);
       if (isPayAddr) {
         return handle;
       }
@@ -1322,6 +2208,7 @@
       nextPayAddr = payWallet.addr;
       if (!nextPayAddr) {
         let xpubKey = await DashHd.fromXKey(payWallet.xpub);
+
         let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
         await config.store.save(safe.cache);
 
@@ -1331,22 +2218,6 @@
 
       return nextPayAddr;
     };
-
-    /**
-     * @param {String} addr
-     * @returns {Boolean}
-     */
-    function _isPayAddr(addr) {
-      if (34 !== addr?.length) {
-        return false;
-      }
-
-      if (!["X", "Y"].includes(addr[0])) {
-        return false;
-      }
-
-      return true;
-    }
 
     /**
      * @param {Array<CoreUtxo>} utxos
@@ -1362,6 +2233,7 @@
         await promise;
 
         let wifInfo = await wallet.findWif({
+          address: utxo.address,
           addr: utxo.address,
           _error: true,
         });
@@ -1373,7 +2245,7 @@
           return;
         }
 
-        //@ts-ignore TODO bad type export
+              //@ts-ignore TODO bad type export
         wifs[wifInfo.wif] = await DashKeys.wifToPrivKey(wifInfo.wif);
         */
 
@@ -1388,12 +2260,14 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.addr - pay address
+     * @param {String} opts.address - pay address
+     * @param {String} [opts.addr] - deprecated, use address
      * @param {Boolean} opts._error - for internal use
      * @returns {Promise<WalletWif?>} - addr info with wif
      */
-    wallet.findWif = async function ({ addr, _error }) {
-      let wifData = await wallet._findWif(addr).catch(function (err) {
+    wallet.findWif = async function ({ address, addr, _error }) {
+      address = address || addr || "";
+      let wifData = await wallet._findWif(address).catch(function (err) {
         if (_error || "E_NO_PRIVATE_KEY" !== err.code) {
           throw err;
         }
@@ -1402,21 +2276,27 @@
         return null;
       }
 
-      let addrInfo = safe.cache.addresses[addr];
-      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
+      let addrInfo = safe.cache.addresses[address];
+      return Object.assign(
+        { address: address, addr: address, wif: wifData.wif },
+        addrInfo,
+      );
     };
 
     /**
-     * @param {String} addr - pay address
+     * @param {String} address - pay address
      */
-    wallet._findWif = async function (addr) {
-      let addrInfo = safe.cache.addresses[addr];
+    wallet._findWif = async function (address) {
+      let addrInfo = safe.cache.addresses[address];
       if (!addrInfo) {
-        throw new Error(`cannot find address info for '${addr}'`);
+        throw new Error(`cannot find address info for '${address}'`);
       }
 
-      if (!addrInfo.hdpath) {
-        let err = new Error(`private key for '${addr}' has not been imported`);
+      let isSpendable = hasWif(addrInfo);
+      if (!isSpendable) {
+        let err = new Error(
+          `private key for '${address}' has not been imported`,
+        );
         //@ts-ignore
         err.code = "E_NO_PRIVATE_KEY";
         throw err;
@@ -1426,14 +2306,15 @@
         return wallet.name === addrInfo.wallet;
       });
       if (!w) {
-        throw new Error(`cannot find wallet for '${addr}'`);
+        throw new Error(`cannot find wallet for '${address}'`);
       }
 
-      if ("*" === addrInfo.hdpath) {
+      let isLooseWif = hasLooseWif(addrInfo);
+      if (isLooseWif) {
         let wifInfo = w.wifs.find(
           /** @param {WifInfo} wifInfo */
           function (wifInfo) {
-            return addr === wifInfo.addr;
+            return address === (wifInfo.address || wifInfo.addr);
           },
         );
         return {
@@ -1452,11 +2333,11 @@
       let xprvKey = await DashHd.derivePath(walletKey, addrInfo.hdpath);
 
       let addressKey = await deriveAddress(xprvKey, addrInfo.index);
-      let address = await DashHd.toAddr(addressKey.publicKey);
+      let _address = await DashHd.toAddr(addressKey.publicKey);
 
-      if (address !== addr) {
+      if (_address !== address) {
         throw new Error(
-          `check fail: hdpath '${addrInfo.hdpath}/${addrInfo.index}' for '${addr}' derived '${address}'`,
+          `check fail: hdpath '${addrInfo.hdpath}/${addrInfo.index}' for '${address}' derived '${_address}'`,
         );
       }
       if (!addressKey.privateKey) {
@@ -1470,17 +2351,19 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.addr - pay address
+     * @param {String} opts.address - pay address
+     * @param {String} [opts.addr] - deprecated, use address
      * @param {Boolean} opts._error - for internal use
      * @returns {Promise<WalletWif?>} - addr info with wif
      */
-    wallet.removeWif = async function ({ addr }) {
-      let addrInfo = safe.cache.addresses[addr];
+    wallet.removeWif = async function ({ address, addr }) {
+      address = address || addr || "";
+      let addrInfo = safe.cache.addresses[address];
       if (!addrInfo) {
         return null;
       }
 
-      let wifData = await wallet._findWif(addr).catch(function (err) {
+      let wifData = await wallet._findWif(address).catch(function (err) {
         if ("E_NO_PRIVATE_KEY" !== err.code) {
           throw err;
         }
@@ -1500,29 +2383,35 @@
       await config.store.save(safe.cache);
 
       // TODO should there be an importAddr as compliment of importWif?
-      delete safe.cache.addresses[addr];
+      delete safe.cache.addresses[address];
       await config.store.save(safe.cache);
 
-      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
+      return Object.assign(
+        { address: addr, addr: addr, wif: wifData.wif },
+        addrInfo,
+      );
     };
 
     /**
      * Shows balance, tx, and wallet stats for the given pay address
      * @param {Object} opts
-     * @param {Array<String>} opts.addrs
+     * @param {Array<String>} opts.addresses
+     * @param {Array<String>} [opts.addrs] - deprecated, use addresses
      * @param {Number} opts.now
      * @param {Number} [opts.staletime]
      * @returns {Promise<Array<WalletAddress>>}
      */
     wallet.stat = async function ({
+      addresses,
       addrs,
       now = Date.now(),
       staletime = config.staletime,
     }) {
       /** @type {Array<WalletAddress>} */
       let addrInfos = [];
+      addresses = addresses || addrs || [];
 
-      await addrs.reduce(async function (promise, addr) {
+      await addresses.reduce(async function (promise, addr) {
         await promise;
 
         let addrInfo = safe.cache.addresses[addr];
@@ -1536,7 +2425,7 @@
         await wallet._updateAddrInfo(addr, now, staletime);
         addrInfo = safe.cache.addresses[addr];
 
-        addrInfos.push(Object.assign({ addr: addr }, addrInfo));
+        addrInfos.push(Object.assign({ address: addr, addr: addr }, addrInfo));
       }, Promise.resolve());
 
       await config.store.save(safe.cache);
@@ -1561,9 +2450,19 @@
 
         if (w.wifs) {
           for (let wifInfo of w.wifs) {
-            await indexWifAddr(wifInfo.addr, now, staletime);
+            await indexNonHdAddr("wifs", wifInfo.addr, now, staletime);
           }
           await config.store.save(safe.privateWallets);
+        }
+        {
+          // TODO transition to w.address, then to w.addresses
+          let addr = w.address || w.addr;
+          if (addr) {
+            await indexNonHdAddr(w.name, addr, now, staletime);
+          }
+          // for (let addrInfo of w.addresses) {
+          //   await indexNonHdAddr(w.name, addrInfo.address, now, staletime);
+          // }
         }
 
         _transitionPhrase(w); // TODO remove
@@ -1604,17 +2503,23 @@
     };
 
     /**
+     * @param {String} walletName
      * @param {String} addr
      * @param {Number} now - ex: Date.now()
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<void>}
      */
-    async function indexWifAddr(addr, now, staletime = config.staletime) {
+    async function indexNonHdAddr(
+      walletName,
+      addr,
+      now,
+      staletime = config.staletime,
+    ) {
       let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         // TODO option for indexOrCreateWif effect vs stricter index-known-only
         addrInfo = Wallet.generateAddress({
-          wallet: "wifs",
+          wallet: walletName,
           hdpath: "*",
           index: -1,
         });
@@ -1725,18 +2630,14 @@
         let addressKey = await deriveAddress(xKey, index);
         let addr = await DashHd.toAddr(addressKey.publicKey);
 
-        let addrInfo = safe.cache.addresses[addr];
-        if (!addrInfo) {
-          addrInfo = Wallet.generateAddress({
-            wallet: walletName,
-            hdpath: hdpath,
-            index: index,
-          });
-          safe.cache.addresses[addr] = addrInfo;
-        }
-
-        await wallet._updateAddrInfo(addr, now, staletime);
-        addrInfo = safe.cache.addresses[addr];
+        let addrInfo = await indexPayAddr(
+          walletName,
+          addr,
+          hdpath,
+          index,
+          now,
+          staletime,
+        );
 
         // TODO check addrs that have utxos?
 
@@ -1756,6 +2657,39 @@
       }
 
       return recentlyUsedIndex + 1;
+    }
+
+    /**
+     * @param {String} walletName
+     * @param {String} addr
+     * @param {String} hdpath - derivation path
+     * @param {Number} index
+     * @param {Number} now - ex: Date.now()
+     * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
+     * @returns {Promise<WalletAddress>}
+     */
+    async function indexPayAddr(
+      walletName,
+      addr,
+      hdpath,
+      index,
+      now,
+      staletime = config.staletime,
+    ) {
+      let addrInfo = safe.cache.addresses[addr];
+      if (!addrInfo) {
+        addrInfo = Wallet.generateAddress({
+          wallet: walletName,
+          hdpath: hdpath,
+          index: index,
+        });
+        safe.cache.addresses[addr] = addrInfo;
+      }
+
+      await wallet._updateAddrInfo(addr, now, staletime);
+      addrInfo = safe.cache.addresses[addr];
+
+      return addrInfo;
     }
 
     /**
@@ -1790,7 +2724,14 @@
         await wallet._updateAddrInfo(addr, now, staletime);
       }, Promise.resolve());
 
-      return await indexPayAddrs(walletName, xprvKey, hdpath, now, staletime);
+      let nextIndex = await indexPayAddrs(
+        walletName,
+        xprvKey,
+        hdpath,
+        now,
+        staletime,
+      );
+      return nextIndex;
     }
 
     /**
@@ -1855,12 +2796,13 @@
 
   /**
    * Returns clamped value, number of stamps, and unusable dust
-   * @param {Number} MIN_DENOM - typically 100000 sats
-   * @param {Number} STAMP - typically 200 sats
+   * @param {DenomConfig} d
    * @param {Number} satoshis
    * @returns {CoinInfo} - faceValue, stamps, etc
    */
-  Wallet._parseCoinInfo = function (MIN_DENOM, STAMP, satoshis) {
+  Wallet._parseCoinInfo = function (d, satoshis) {
+    let MIN_DENOM = d.__MIN_DENOM__;
+    let STAMP = d.__STAMP__;
     let mdash = satoshis / MIN_DENOM;
     mdash = Math.floor(mdash);
 
@@ -1884,15 +2826,429 @@
   };
 
   /**
-   * @param {Array<Number>} DENOMS
-   * @param {Number} STAMP
+   * @typedef DenomConfig
+   * @prop {Number} __MIN_DENOM__ - typically 100000 sats
+   * @prop {Number} __MIN_STAMPS__ - typically 2 (a coin must be self-spendable by the person you send it to, and once more)
+   * @prop {Number} __STAMP__ - typically 200 sats
+   * @prop {Array<Number>} __DENOMS__ - typically doubles, wholes, and halves of each order of magnitude down to (100000) (0.001)
+   */
+
+  /**
+   * Returns clamped value, number of stamps, and unusable dust
+   * @param {DenomConfig}  d
+   * @param {Array<CoreUtxo>} utxos
+   * @returns {Array<UtxoCoinInfo>}
+   */
+  Wallet._parseUtxosInfo = function (d, utxos) {
+    /** @type {Array<UtxoCoinInfo>} */
+    let utxoInfos = [];
+
+    for (let utxo of utxos) {
+      let coinInfo = Wallet._parseCoinInfo(d, utxo.satoshis);
+      let utxoInfo = Object.assign({}, utxo, coinInfo);
+      utxoInfos.push(utxoInfo);
+    }
+
+    return utxoInfos;
+  };
+
+  /**
+   * a cash-like selection of matching inputs given target outputs
+   * @template {DenomInfo} D
+   * @param {DenomConfig}  d
+   * @param {SendInfo} sendInfo
+   * @param {Array<D>} denomInfos
+   * @returns CoinSelection
+   */
+  Wallet._pairInputsToOutputs = function (d, sendInfo, denomInfos) {
+    let MIN_STAMPS = d.__MIN_STAMPS__;
+    let STAMP = d.__STAMP__;
+    let DENOMS = d.__DENOMS__;
+    let HEADER_SIZE = 10;
+    let INPUT_SIZE = 149;
+    let OUTPUT_SIZE = 34;
+
+    let R_DENOMS = DENOMS.slice(0);
+    R_DENOMS.reverse();
+
+    let sendVals = [];
+
+    let _denomInfos = denomInfos.slice(0);
+    _denomInfos.sort(Wallet._byNumberOfCoins);
+
+    let minStamps = MIN_STAMPS + 1;
+    let numCoinsOut = sendInfo.denoms.length;
+    let stampsCount = minStamps * numCoinsOut;
+    let minStampsValue = stampsCount * STAMP;
+    let totalSelectedSats = -minStampsValue;
+
+    let totalFaceValue = 0;
+    let selectedFaceValue = 0;
+    let totalSelected = 0;
+
+    // Note: the receiving party may wish to have the coins broken
+    // into something other than the ideal change.
+    // In the future we may wish to account for that
+    // (probably the same inputs, but 34 more sats per additional output).
+
+    /** @type {Object.<String, Number>} */
+    let needed = {};
+    for (let denom of DENOMS) {
+      needed[denom] = { count: 0, have: 0 };
+    }
+
+    sendVals = sendInfo.denoms.slice(0);
+    for (let denom of sendVals) {
+      totalFaceValue += denom;
+      needed[denom].count += 1;
+    }
+
+    // Pass #1: fill all possible slots
+
+    /** @type {Array<D>} */
+    let coins = [];
+    /** @type {Array<D>} */
+    let leftovers = [];
+    for (let denomInfo of _denomInfos) {
+      // TODO recalc 'coins' 'needed' on every iteration of loop
+      // to account for a range of possibilities based on total number of stamps
+      // in excess of the minimum for the group
+      let usable = countUsableCoins(needed, denomInfo);
+      let extra = denomInfo.denoms.length - usable;
+      let consumable = extra === 0;
+
+      // {
+      //   let faceValue = denomInfo.faceValue.toString();
+      //   faceValue = faceValue.padStart(10, " ");
+
+      //   let good = "";
+      //   if (consumable) {
+      //     good = "✅";
+      //   }
+
+      //   let change = denomInfo.denoms.length - usable;
+      //   console.log(`consumable: ${faceValue}, ${usable}-${change}, ${good}`);
+      // }
+
+      if (!consumable) {
+        leftovers.push(denomInfo);
+        continue;
+      }
+
+      totalSelectedSats += denomInfo.satoshis;
+      for (let denom of denomInfo.denoms) {
+        needed[denom].have += 1;
+        selectedFaceValue += denom;
+      }
+      totalSelected += denomInfo.denoms.length;
+      coins.push(denomInfo);
+    }
+    _denomInfos = leftovers;
+    leftovers = [];
+
+    // Pass #2: select the highest coin to fill the gap
+
+    let totalDiff = totalFaceValue - selectedFaceValue;
+    // console.log("[DEBUG] 1st selection diff:", totalDiff);
+    if (totalDiff > 0) {
+      let sorter = Wallet._byLeastChangeLowestValue(d, totalDiff);
+      _denomInfos.sort(sorter);
+      for (let denomInfo of _denomInfos) {
+        if (totalDiff <= 0) {
+          leftovers.push(denomInfo);
+          continue;
+        }
+
+        if (denomInfo.faceValue >= totalDiff) {
+          totalSelectedSats += denomInfo.satoshis;
+          selectedFaceValue += denomInfo.faceValue;
+          coins.push(denomInfo);
+          totalSelected += denomInfo.denoms.length;
+          totalDiff = 0;
+          continue;
+        }
+
+        leftovers.push(denomInfo);
+      }
+      _denomInfos = leftovers;
+      leftovers = [];
+    }
+
+    totalDiff = totalFaceValue - selectedFaceValue;
+    // console.log("[DEBUG] 2nd selection diff:", totalDiff);
+    if (totalDiff > 0) {
+      _denomInfos.sort(Wallet._byFaceValueDesc);
+      for (let denomInfo of _denomInfos) {
+        if (totalDiff <= 0) {
+          leftovers.push(denomInfo);
+          continue;
+        }
+
+        // TODO (needs big brain): once the target is hit,
+        // try other combos to see if they yield fewer coins
+        totalSelectedSats += denomInfo.satoshis;
+        selectedFaceValue += denomInfo.faceValue;
+        totalSelected += denomInfo.denoms.length;
+        totalDiff -= denomInfo.faceValue;
+        coins.push(denomInfo);
+      }
+      _denomInfos = leftovers;
+      leftovers = [];
+    }
+
+    totalDiff = totalFaceValue - totalSelectedSats;
+    // console.log("[DEBUG] 3rd selection diff:", totalDiff);
+    if (totalDiff > 0) {
+      let dashReqValue = DashApi.toDash(totalFaceValue).toFixed(3);
+      //let dashFaceValue = DashApi.toDash(selectedFaceValue).toFixed(3);
+      let dashFaceValue = DashApi.toDash(totalSelectedSats).toFixed(8);
+      let err = new Error(
+        `cannot accumulate ${dashReqValue} with the coins provided (${dashFaceValue})`,
+      );
+      //@ts-ignore
+      err.code = "E_INSUFFICIENT_FUNDS";
+      throw err;
+    }
+
+    let fee = 0;
+    let satoshis = 0;
+    let change = 0;
+
+    // iterate over the coins that we've selected to determine
+    // if their value meets the requirement, otherwise select another
+    _denomInfos.sort(Wallet._byFaceValueAsc);
+    for (;;) {
+      satoshis = 0;
+      fee = 0;
+
+      fee = HEADER_SIZE;
+      fee += OUTPUT_SIZE * sendVals.length;
+      satoshis = 0;
+      for (let coinInfo of coins) {
+        fee += INPUT_SIZE;
+        satoshis += coinInfo.satoshis;
+      }
+
+      let stampsCount = MIN_STAMPS * sendVals.length;
+      change = satoshis - sendInfo.satoshis;
+      change -= fee;
+      change -= stampsCount * STAMP;
+      if (change >= 0) {
+        break;
+      }
+
+      if (!_denomInfos.length) {
+        throw new Error("not enough coins to pay fees, etc");
+      }
+
+      let removed = _denomInfos.splice(0, 1);
+      let denomInfo = removed[0];
+      coins.push(denomInfo);
+    }
+
+    let changeDenomInfo = Wallet._denominateToOutputs(d, coins, sendVals);
+    //let changeCoins = changeDenomInfo.denoms.slice(0);
+    //changeDenomInfo.denoms = changeDenomInfo.denoms.concat(sendVals);
+
+    // TODO adjust changeDenomInfo + sendInfo
+    // (spread the stamp values across)
+    // 1. make objects for sendInfo denoms
+    // 2. concat all objects
+    // 3. randomize
+    // 4. spread stamps
+    // 5. dust?? fees?
+    return {
+      inputs: coins,
+      // TODO can we make this more denom-info-y?
+      // TODO forget "change", it's a "layer 2" thing
+      //output: { denoms: sendVals, },
+      output: changeDenomInfo,
+      change: null,
+      //change: changeCoins,
+      //change: changeDenomInfo,
+    };
+  };
+
+  // TODO select coins that are a better match than the ideal
+  // # of inputs+outputs < # of ideal inputs
+
+  /**
+   * @param {Object.<String, Number>} needed
+   * @param {DenomInfo} info
+   */
+  function countUsableCoins(needed, info) {
+    /** @type {Object.<String, Number>} */
+    let _needed = {};
+    let denoms = Object.keys(needed);
+    for (let denom of denoms) {
+      _needed[denom] = Object.assign({}, needed[denom]);
+    }
+
+    let usable = 0;
+    for (let denom of info.denoms) {
+      let need = _needed[denom].count - _needed[denom].have;
+      let isNeeded = need > 0;
+      if (!isNeeded) {
+        continue;
+      }
+      _needed[denom].have += 1;
+      usable += 1;
+    }
+
+    return usable;
+  }
+
+  /**
+   * Sort DenomInfos first by lowest face value first
+   * @param {DenomInfo} a
+   * @param {DenomInfo} b
+   * @returns {Number}
+   */
+  Wallet._byFaceValueAsc = function (a, b) {
+    return a.faceValue - b.faceValue;
+  };
+
+  /**
+   * Sort DenomInfos first by lowest face value first
+   * @param {DenomInfo} a
+   * @param {DenomInfo} b
+   * @returns {Number}
+   */
+  Wallet._byFaceValueDesc = function (a, b) {
+    return b.faceValue - a.faceValue;
+  };
+
+  /**
+   * Sort DenomInfos
+   * @callback DenomSorter
+   * @param {DenomInfo} a
+   * @param {DenomInfo} b
+   * @returns {Number}
+   */
+
+  /**
+   * Create a sorter that optimizes for the least change
+   * @param {DenomConfig} d
+   * @param {Number} faceValue
+   * @returns {DenomSorter}
+   */
+  Wallet._byLeastChangeLowestValue = function (d, faceValue) {
+    /** @type {DenomSorter} */
+    function sorter(a, b) {
+      let fa = a.faceValue - faceValue;
+      let fb = b.faceValue - faceValue;
+
+      // can't calculate change for insufficient funds
+      if (fa < 0) {
+        if (fb < 0) {
+          return fa - fb;
+        }
+        return 1;
+      }
+      if (fb < 0) {
+        return -1;
+      }
+
+      let ca = Wallet._parseCoinInfo(d, fa);
+      let cb = Wallet._parseCoinInfo(d, fb);
+      let da = Wallet._denominateCoin(d, ca);
+      let db = Wallet._denominateCoin(d, cb);
+
+      return da.denoms.length - db.denoms.length;
+    }
+
+    return sorter;
+  };
+
+  /**
+   * Sort DenomInfos first by denoms per coin, then by lowest value
+   * @param {DenomInfo} a
+   * @param {DenomInfo} b
+   * @returns {Number}
+   */
+  Wallet._byNumberOfCoins = function (a, b) {
+    let extraCoins = a.denoms.length - b.denoms.length;
+    if (extraCoins > 0) {
+      return -1;
+    }
+
+    if (extraCoins === 0) {
+      let diff = a.faceValue - b.faceValue;
+      if (diff < 0) {
+        return -1;
+      }
+
+      if (diff === 0) {
+        return 0;
+      }
+    }
+
+    return 1;
+  };
+
+  /**
+   * @param {DenomConfig} d
+   * @param {Number} satoshis
+   * @returns {SendInfo}
+   */
+  Wallet._parseSendInfo = function (d, satoshis) {
+    let MIN_DENOM = d.__MIN_DENOM__;
+    let MIN_STAMPS = d.__MIN_STAMPS__;
+    let STAMP = d.__STAMP__;
+    let DENOMS = d.__DENOMS__;
+
+    let missing = 0;
+    let dustNeeded = satoshis % MIN_DENOM;
+    if (dustNeeded) {
+      missing = MIN_DENOM - dustNeeded;
+    }
+
+    let _lowFaceValue = satoshis - dustNeeded;
+    let faceValue = _lowFaceValue;
+
+    let denoms = [];
+    let remainder = faceValue;
+    for (let denom of DENOMS) {
+      while (remainder >= denom) {
+        denoms.push(denom);
+        remainder -= denom;
+      }
+    }
+
+    let extra = denoms.length * STAMP * MIN_STAMPS;
+    if (extra < dustNeeded) {
+      faceValue = satoshis + missing;
+      denoms = [];
+      remainder = faceValue;
+      for (let denom of DENOMS) {
+        while (remainder >= denom) {
+          denoms.push(denom);
+          remainder -= denom;
+        }
+      }
+    }
+
+    return {
+      satoshis,
+      denoms,
+      _lowFaceValue,
+      faceValue,
+      dustNeeded,
+    };
+  };
+
+  /**
+   * @param {DenomConfig} d
    * @param {CoinInfo} coinInfo
    * @param {Boolean} force - make change to create stamps if necessary
    * @return {DenomInfo}
    */
-  Wallet._denominateCoin = function (DENOMS, STAMP, coinInfo, force = false) {
+  Wallet._denominateCoin = function (d, coinInfo, force = false) {
+    let DENOMS = d.__DENOMS__;
+    let STAMP = d.__STAMP__;
+
     if (force) {
-      return Wallet._denominateSelfPayCoins(DENOMS, STAMP, [coinInfo]);
+      return Wallet._denominateSelfPayCoins(d, [coinInfo]);
     }
     let denoms = [];
 
@@ -1912,6 +3268,7 @@
 
     let transactable = false;
     let stampsPerCoin = 0;
+    let stampsRemaining = 0;
     let MIN_STAMPS = 2;
     let stampsNeeded = MIN_STAMPS * denoms.length;
     stampsNeeded -= coinInfo.stamps;
@@ -1920,6 +3277,7 @@
     let denomInfo = Object.assign(coinInfo, {
       denoms,
       stampsPerCoin,
+      stampsRemaining,
       fee,
       transactable,
       stampsNeeded,
@@ -1928,26 +3286,30 @@
     denomInfo.stampsPerCoin = _stampsPerCoin(STAMP, denomInfo);
     denomInfo.transactable = denomInfo.stampsPerCoin >= MIN_STAMPS;
 
+    let evenStamps = denomInfo.stampsPerCoin * denomInfo.denoms.length;
+    denomInfo.stampsRemaining = coinInfo.stamps - evenStamps;
+    let feeStamps = fee / STAMP;
+    feeStamps = Math.ceil(feeStamps);
+    denomInfo.stampsRemaining -= feeStamps;
+
     return denomInfo;
   };
 
   /**
-   * @param {Array<Number>} DENOMS
-   * @param {Number} STAMP
+   * @param {DenomConfig} d
    * @param {Array<CoinInfo>} coinInfos
-   * @param {Boolean} force - make change to create stamps if necessary
+   * @param {Array<Number>} [_outputs] - how the change should be broken
    * @return {DenomInfo}
    */
-  Wallet._denominateSelfPayCoins = function (
-    DENOMS,
-    STAMP,
-    coinInfos,
-    force = false,
-  ) {
+  Wallet._denominateSelfPayCoins = function (d, coinInfos, _outputs = []) {
+    let DENOMS = d.__DENOMS__;
+    let STAMP = d.__STAMP__;
+    let MIN_STAMPS = d.__MIN_STAMPS__;
+    // TODO decide on a particularly reasonable value
+    let SUFFICIENT_STAMPS = 250;
     let HEADER_SIZE = 10;
     let INPUT_SIZE = 149;
     let OUTPUT_SIZE = 34;
-    let MIN_STAMPS = 2;
     let minStampFee = MIN_STAMPS * STAMP;
 
     let fee = HEADER_SIZE;
@@ -1957,23 +3319,44 @@
       fee += INPUT_SIZE;
     }
 
+    let numCoins = 0;
     let denoms = [];
     let faceValue = 0;
     let stamps = 0;
     let excess = satoshis - fee;
+
+    for (let denom of _outputs) {
+      let selfPayDenom = denom;
+      selfPayDenom = denom + minStampFee + OUTPUT_SIZE;
+      if (excess < selfPayDenom) {
+        let requested = _outputs.join(", ");
+        let err = new Error(
+          `requested denominations (${requested}) exceed requested amount '${satoshis}' (${coinInfos.length})`,
+        );
+        //@ts-ignore
+        err.code = "E_INVALID_REQUEST";
+        throw err;
+      }
+      numCoins += 1;
+      stamps += MIN_STAMPS;
+      excess -= selfPayDenom;
+      fee += OUTPUT_SIZE;
+      faceValue += denom;
+    }
+
     for (let denom of DENOMS) {
-      let feeDenom = denom;
-      feeDenom = denom + minStampFee + OUTPUT_SIZE;
-      while (excess >= feeDenom) {
+      let selfPayDenom = denom + minStampFee + OUTPUT_SIZE;
+      while (excess >= selfPayDenom) {
+        numCoins += 1;
         denoms.push(denom);
         stamps += MIN_STAMPS;
-        excess -= feeDenom;
+        excess -= selfPayDenom;
         fee += OUTPUT_SIZE;
         faceValue += denom;
       }
     }
 
-    if (denoms.length === 0) {
+    if (numCoins === 0) {
       let err = new Error(
         `cannot create a spendable coin from '${satoshis}' sats across ${coinInfos.length} coins (dust)`,
       );
@@ -1987,8 +3370,37 @@
     extraStamps = Math.floor(extraStamps);
     stamps += extraStamps;
 
-    let stampsPerCoin = stamps / denoms.length;
+    let stampsPerCoin = stamps / numCoins;
     stampsPerCoin = Math.floor(stampsPerCoin);
+
+    if (_outputs.length) {
+      let stampDenom = 0;
+      for (; denoms.length; ) {
+        //@ts-ignore
+        stampDenom = denoms.pop();
+        numCoins -= 1;
+        fee -= OUTPUT_SIZE;
+
+        let extraStamps2 = stampDenom / STAMP;
+        extraStamps2 = Math.floor(extraStamps2);
+        stamps += extraStamps2;
+
+        let stampsPerCoin2 = stamps / numCoins;
+        stampsPerCoin2 = Math.floor(stampsPerCoin2);
+
+        // rewind
+        if (stampsPerCoin2 > SUFFICIENT_STAMPS) {
+          stamps -= extraStamps2;
+          fee += OUTPUT_SIZE;
+          numCoins += 1;
+          denoms.push(stampDenom);
+          break;
+        }
+      }
+      stampsPerCoin = stamps / numCoins;
+      stampsPerCoin = Math.floor(stampsPerCoin);
+    }
+    // console.log("[DEBUG] STAMPS_PER_COIN:", stampsPerCoin);
 
     // adjusting for the normal calculation that uses fees to calculate stamps
     let stampDust = fee + dust;
@@ -1996,6 +3408,9 @@
     dustStamps = Math.floor(dustStamps);
     stamps += dustStamps;
     dust = stampDust % STAMP;
+
+    let evenStamps = stampsPerCoin * numCoins;
+    let stampsRemaining = stamps - evenStamps;
 
     let coinInfo = {
       satoshis,
@@ -2009,13 +3424,168 @@
     let denomInfo = Object.assign(coinInfo, {
       denoms,
       stampsPerCoin,
+      stampsRemaining,
       fee,
       transactable,
       stampsNeeded,
     });
 
+    denomInfo.stampsRemaining = coinInfo.stamps - evenStamps;
+    let feeStamps = fee / STAMP;
+    feeStamps = Math.ceil(feeStamps);
+    denomInfo.stampsRemaining -= feeStamps;
+
     return denomInfo;
   };
+
+  /**
+   * @param {DenomConfig} d
+   * @param {Array<CoinInfo>} coinInfos
+   * @param {Array<Number>} _outputs - how the change should be broken
+   * @return {DenomInfo}
+   */
+  Wallet._denominateToOutputs = function (d, coinInfos, _outputs = []) {
+    let SATS_NUM_DIGITS = 8;
+
+    let DENOMS = d.__DENOMS__;
+    let MIN_DENOM = d.__MIN_DENOM__;
+
+    let HEADER_SIZE = 10;
+    let INPUT_SIZE = 149;
+    let OUTPUT_SIZE = 34;
+
+    let STAMP = d.__STAMP__;
+    let MIN_STAMPS = d.__MIN_STAMPS__;
+    let MIN_STAMPS_SATS = MIN_STAMPS * STAMP;
+    let MAX_STAMPS = MIN_DENOM / STAMP;
+    MAX_STAMPS = ieeeSafeFloor(MAX_STAMPS, SATS_NUM_DIGITS);
+    MAX_STAMPS -= 1;
+
+    //let TARGET_STAMPS = MAX_STAMPS + 1 / 2;
+    //TARGET_STAMPS = ieeeSafeFloor(TARGET_STAMPS, SATS_NUM_DIGITS);
+
+    let requiredFee = 0;
+    requiredFee += HEADER_SIZE;
+
+    let totalSatsIn = 0;
+    for (let coinInfo of coinInfos) {
+      totalSatsIn += coinInfo.satoshis;
+      requiredFee += INPUT_SIZE;
+    }
+
+    let faceSatsOut = 0;
+
+    for (let denom of _outputs) {
+      requiredFee += OUTPUT_SIZE;
+      faceSatsOut += denom;
+    }
+
+    let totalStampsOut = MIN_STAMPS * _outputs.length;
+    let minStampSatsOut = MIN_STAMPS_SATS * _outputs.length;
+
+    let partialSatsOut = requiredFee + faceSatsOut;
+
+    let dirtSats = totalSatsIn - partialSatsOut;
+    let totalUnforcedSats = dirtSats - minStampSatsOut;
+    if (totalUnforcedSats < 0) {
+      let requested = _outputs.join(", ");
+      let err = new Error(
+        [
+          `requested outputs exceed given inputs:`,
+          `    inputs: ${coinInfos.length} coins totaling ${totalSatsIn}`,
+          `    outputs: coins of ${requested} + ${totalStampsOut} stamps + ${requiredFee} fee`,
+        ].join("\n"),
+      );
+      //@ts-ignore
+      err.code = "E_INVALID_REQUEST";
+      throw err;
+    }
+
+    //let maxStamps = MAX_STAMPS;
+    let extraStampsPerCoin = 0;
+    let extraStampsOut = 0;
+    let maxStampsPerCoin = 0;
+    let minStampsPerCoin = 0;
+    let denoms = _outputs.slice(0);
+    //let STAMP_AND_FEE = STAMP + OUTPUT_SIZE;
+    for (;;) {
+      //extraStampsOut = totalUnforcedSats / STAMP_AND_FEE;
+      extraStampsOut = totalUnforcedSats / STAMP;
+      extraStampsOut = ieeeSafeFloor(extraStampsOut, SATS_NUM_DIGITS);
+      dirtSats = totalUnforcedSats % STAMP;
+
+      extraStampsPerCoin = extraStampsOut / denoms.length;
+      maxStampsPerCoin = Math.ceil(extraStampsPerCoin) + MIN_STAMPS;
+      extraStampsPerCoin = ieeeSafeFloor(extraStampsPerCoin, SATS_NUM_DIGITS);
+      minStampsPerCoin = extraStampsPerCoin + MIN_STAMPS;
+      extraStampsOut = extraStampsOut % denoms.length;
+
+      if (maxStampsPerCoin < MAX_STAMPS) {
+        break;
+      }
+
+      // TODO increase min stamp values?
+
+      for (let denom of DENOMS) {
+        let denomAndFeeAndStamps = denom + OUTPUT_SIZE + MIN_STAMPS_SATS;
+        while (totalUnforcedSats >= denomAndFeeAndStamps) {
+          denoms.push(denom);
+          faceSatsOut += denom;
+          requiredFee += OUTPUT_SIZE;
+          totalUnforcedSats -= denomAndFeeAndStamps;
+        }
+      }
+
+      // If we have change, it means there's a minimum of 2 coins with 3 stamps each.
+      // If that's the case, it's impossible to get into the case of exactly 0.002
+      // being 0.001 + 500 stamps where creating a coin would go below the min stamps
+      // and creating stamps will go above the max 499 stamps.
+      if (!denoms.length) {
+        throw new Error(
+          `[Sanity Fail] it should be impossible to get into a situation where both creating a coin form stamps and turning a coin into stamps exceed the limits`,
+        );
+      }
+    }
+    totalStampsOut += extraStampsOut + extraStampsPerCoin * denoms.length;
+
+    let coinInfo = {
+      satoshis: totalSatsIn,
+      faceValue: faceSatsOut,
+      stamps: totalStampsOut,
+      dust: dirtSats,
+    };
+
+    let stampsRemaining = extraStampsOut;
+
+    let denomInfo = Object.assign(coinInfo, {
+      denoms: denoms,
+      stampsPerCoin: minStampsPerCoin,
+      maxStampsPerCoin: maxStampsPerCoin,
+      stampsRemaining: stampsRemaining,
+      fee: requiredFee,
+      transactable: true,
+      stampsNeeded: 0,
+    });
+
+    return denomInfo;
+  };
+
+  /**
+   * Like Math.floor(), but accounts for IEEE floating point errors
+   *     1.0000000000000003 => 1.0 (IEEE error ignored)
+   *     1.9999999999999999 => 2.0 (IEEE error corrected)
+   *     1.99999999         => 1.0 (already correct)
+   * Floor legitimate remainder and then round down (1.9 => 1.0)
+   * @param {Number} n
+   * @param {Number} numSignificant - how many digits to care about
+   * @returns {Number}
+   */
+  function ieeeSafeFloor(n, numSignificant) {
+    let s = n.toFixed(numSignificant);
+    n = parseFloat(s);
+    n = Math.floor(n);
+    return n;
+  }
 
   /**
    * @param {Number} STAMP
@@ -2041,15 +3611,17 @@
   }
 
   /**
-   * @param {Array<Number>} DENOMS
-   * @param {Number} STAMP
+   * @param {DenomConfig} d
    * @param {Array<CoinInfo>} coinInfos
    * @param {Boolean} force - make change to create stamps if necessary
    * @return {DenomInfo}
    */
-  Wallet._denominateCoins = function (DENOMS, STAMP, coinInfos, force = false) {
+  Wallet._denominateCoins = function (d, coinInfos, force = false) {
+    let DENOMS = d.__DENOMS__;
+    let STAMP = d.__STAMP__;
+
     if (force) {
-      return Wallet._denominateSelfPayCoins(DENOMS, STAMP, coinInfos);
+      return Wallet._denominateSelfPayCoins(d, coinInfos);
     }
 
     let denoms = [];
@@ -2062,9 +3634,7 @@
       //dust += coinInfo.dust;
     }
 
-    let MIN_DENOM_INDEX = DENOMS.length - 1;
-    let MIN_DENOM = DENOMS[MIN_DENOM_INDEX];
-    let coinInfo = Wallet._parseCoinInfo(MIN_DENOM, STAMP, satoshis);
+    let coinInfo = Wallet._parseCoinInfo(d, satoshis);
 
     let remainder = coinInfo.faceValue;
     for (let denom of DENOMS) {
@@ -2082,6 +3652,7 @@
 
     let transactable = false;
     let stampsPerCoin = 0;
+    let stampsRemaining = 0;
     let MIN_STAMPS = 2;
     let stampsNeeded = MIN_STAMPS * denoms.length;
     stampsNeeded -= coinInfo.stamps;
@@ -2090,6 +3661,7 @@
     let denomInfo = Object.assign(coinInfo, {
       denoms,
       stampsPerCoin,
+      stampsRemaining,
       fee,
       transactable,
       stampsNeeded,
@@ -2097,6 +3669,12 @@
 
     denomInfo.stampsPerCoin = _stampsPerCoin(STAMP, denomInfo);
     denomInfo.transactable = denomInfo.stampsPerCoin > MIN_STAMPS;
+
+    let evenStamps = denomInfo.stampsPerCoin * denomInfo.denoms.length;
+    denomInfo.stampsRemaining = coinInfo.stamps - evenStamps;
+    let feeStamps = fee / STAMP;
+    feeStamps = Math.ceil(feeStamps);
+    denomInfo.stampsRemaining -= feeStamps;
 
     return denomInfo;
   };
@@ -2159,10 +3737,13 @@
    * @param {Object} opts
    * @param {String} opts.handle
    * @param {String} opts.xpub
-   * @param {String} opts.addr
+   * @param {String} opts.address
+   * @param {String} [opts.addr] - deprecated, use address
    * @returns {PayWallet}
    */
-  Wallet.generatePayWallet = function ({ handle, xpub, addr }) {
+  Wallet.generatePayWallet = function ({ handle, xpub, addr, address }) {
+    address = address || addr || "";
+
     let d = new Date();
     return {
       contact: handle,
@@ -2170,7 +3751,8 @@
       label: handle,
       name: handle.toLowerCase(),
       priority: d.valueOf(),
-      addr: addr,
+      address: address,
+      addr: address,
       xpub: xpub,
       created_at: d.toISOString(),
       archived_at: null,
@@ -2197,17 +3779,50 @@
   };
 
   /**
+   * @param {String} addr
+   * @returns {Boolean}
+   */
+  Wallet.isAddrLike = function (addr) {
+    if (ADDR_CHAR_LEN !== addr?.length) {
+      return false;
+    }
+
+    if (!ADDR_VERSIONS.includes(addr[0])) {
+      return false;
+    }
+
+    return true;
+  };
+
+  /**
+   * @param {String} addr
+   * @returns {Promise<Boolean>}
+   */
+  Wallet.isAddr = async function (addr) {
+    let isAddrLike = Wallet.isAddrLike(addr);
+    if (!isAddrLike) {
+      return false;
+    }
+
+    // TODO DashKeys.assertAddr(addr)
+    //@ts-ignore TODO bad export
+    await DashKeys.addrToPkh(addr);
+
+    return true;
+  };
+
+  /**
    * @param {String} xpub
    * @returns {Promise<Boolean>} - is xpub with valid checksum
    */
   Wallet.isXPub = async function (xpub = "") {
     // TODO check length
 
-    if (!xpub.startsWith("xpub")) {
+    if (!XPUB_VERSIONS.includes("xpub")) {
       return false;
     }
 
-    if (xpub.length !== 111) {
+    if (xpub.length !== XPUB_CHAR_LEN) {
       return false;
     }
 
