@@ -1021,9 +1021,6 @@
     wallet._authDirtyTx = async function ({ summary, now = Date.now() }) {
       let offset = 3000;
       let recipAddr = summary.output?.address || "";
-      if (recipAddr) {
-        safe.cache.addresses[recipAddr].sync_at = now + offset;
-      }
       let recipAddrInfo = safe.cache.addresses[recipAddr];
       if (recipAddrInfo) {
         recipAddrInfo.sync_at = now + offset;
