@@ -288,7 +288,8 @@
    * @prop {String?} archived_at - ISO Date
    *
    * @typedef WifInfo
-   * @prop {String} addr
+   * @prop {String} address
+   * @prop {String} [addr] - deprecated, use address
    * @prop {String} wif
    * @prop {String} created_at - ISO Date
    */
@@ -300,7 +301,8 @@
    * @prop {String} label
    * @prop {String} name
    * @prop {Number} priority
-   * @prop {String} addr - instead of xpub, e.g. for coinbase
+   * @prop {String} address - instead of xpub, e.g. for coinbase
+   * @prop {String} addr - deprecated, use address
    * @prop {String} xpub
    * @prop {String} created_at - ISO Date
    * @prop {String?} archived_at - ISO Date
@@ -423,10 +425,10 @@
     /**
      * @param {String} handle - contact's handle
      * @param {String} xpub
-     * @param {String} addr
+     * @param {String} address
      * @returns {Promise<PayWallet>}
      */
-    async function _getPayWallet(handle, xpub, addr) {
+    async function _getPayWallet(handle, xpub, address) {
       if (xpub) {
         await Wallet.assertXPub(xpub);
       }
@@ -442,8 +444,8 @@
             return xpub === wallet.xpub;
           }
 
-          if (addr.length > 0) {
-            return addr === wallet.addr;
+          if (address.length > 0) {
+            return address === wallet.addr;
           }
 
           return false;
@@ -452,7 +454,7 @@
         txWallet = Wallet.generatePayWallet({
           handle: handle,
           xpub: xpub,
-          addr: addr,
+          address: address,
         });
         for (let i = 1; ; i += 1) {
           if (!safe.payWallets[`${handle}:${i}`]) {
@@ -524,7 +526,10 @@
         await indexWifAddr(addr, now, staletime);
 
         addrInfos.push(
-          Object.assign({ addr: addr }, safe.cache.addresses[addr]),
+          Object.assign(
+            { address: addr, addr: addr },
+            safe.cache.addresses[addr],
+          ),
         );
 
         // TODO force duplicate option? (for partially-synced wallets)
@@ -544,6 +549,7 @@
         if (!exists) {
           // the first "wifs" is the name of the wallet
           safe.privateWallets.wifs.wifs.push({
+            address: addr,
             addr: addr,
             wif: wif,
             created_at: new Date().toISOString(),
@@ -616,7 +622,9 @@
       if (34 === addrPrefix.length) {
         let addrInfo = safe.cache.addresses[addrPrefix];
         if (addrInfo) {
-          addrInfos.push(Object.assign({ addr: addrPrefix }, addrInfo));
+          addrInfos.push(
+            Object.assign({ address: addrPrefix, addr: addrPrefix }, addrInfo),
+          );
         }
         return addrInfos;
       }
@@ -631,7 +639,7 @@
 
       addrs.forEach(function (addr) {
         let addrInfo = safe.cache.addresses[addr];
-        addrInfos.push(Object.assign({ addr: addr }, addrInfo));
+        addrInfos.push(Object.assign({ address: addr, addr: addr }, addrInfo));
       });
 
       return addrInfos;
@@ -668,22 +676,6 @@
     };
 
     /**
-     * @param {Object} opts
-     * @param {String} opts.handle - a private wallet name
-     * @param {Number} opts.usage - 0 for deposit, 1 for change
-     * @returns {Promise<String>} - pay address
-     */
-    wallet._nextWalletAddr = async function ({ handle, usage }) {
-      let count = 1;
-      let addrsInfo = await wallet._nextWalletAddrs({
-        handle,
-        usage,
-        count,
-      });
-      return addrsInfo.addrs[0];
-    };
-
-    /**
      * @typedef NextInfo
      * @prop {Number} start
      * @prop {String} [addr]
@@ -692,17 +684,39 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.handle - a private wallet name
-     * @param {Number} opts.usage - 0 for deposit, 1 for change
+     * @param {import('dashhd').HDXKey} opts.xKey
      * @param {Number} opts.count - how many next addresses
-     * @returns {Promise<NextInfo>} - info about next addresses
+     * @param {Number} opts.offset - where to start
+     * @returns {Promise<Array<String>>} - next n unused addresses
      */
-    wallet._nextWalletAddrs = async function ({ handle, usage, count = 1 }) {
+    wallet._nextWalletAddrs = async function ({ xKey, count = 1, offset }) {
+      let addrs = [];
+      for (let i = 0; i < count; i += 1) {
+        let index = offset + i;
+
+        let addressKey = await deriveAddress(xKey, index);
+        let addr = await DashHd.toAddr(addressKey.publicKey);
+        addrs.push(addr);
+      }
+      return addrs;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {String} opts.hdpath
+     * @returns {Promise<import('dashhd').HDXKey>}
+     */
+    wallet._recoverXPrv = async function ({ handle, hdpath }) {
       let ws = await wallet.findPrivateWallets({ handle });
-      let w = ws[0] || safe.privateWallets.main;
+      if (!ws.length) {
+        throw new Error(`could not find wallet or account for '${handle}'`);
+      }
+      ws.forEach(function (w) {
+        _transitionPhrase(w); // TODO remove
+      });
 
-      _transitionPhrase(w); // TODO remove
-
+      let w = ws[0];
       let hasRecoveryPhrase = w.phrase?.length > 0;
       if (!hasRecoveryPhrase) {
         throw new Error(
@@ -714,54 +728,47 @@
       let seed = await DashPhrase.toSeed(w.phrase, salt);
       let walletKey = await DashHd.fromSeed(seed);
 
-      let account = 0; // main
-      let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
-
       /** @type {import('dashhd').HDXKey} */
       let xprvKey = await DashHd.derivePath(walletKey, hdpath);
 
-      let now = Date.now();
-      let nextIndex = await indexPayAddrs(w.name, xprvKey, hdpath, now);
-      await config.store.save(safe.cache);
-
-      let addrs = [];
-      for (let i = 0; i < count; i += 1) {
-        let index = nextIndex + i;
-
-        let addressKey = await deriveAddress(xprvKey, index);
-        let addr = await DashHd.toAddr(addressKey.publicKey);
-        addrs.push(addr);
-      }
-      return { start: nextIndex, addr: addrs[0], addrs: addrs };
+      return xprvKey;
     };
 
     /**
      * @param {Object} opts
      * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} opts.now
      */
-    wallet.createNextPayAddr = async function ({ handle }) {
+    wallet.getNextPayAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+    }) {
       let ws = await wallet.findPayWallets({ handle });
       let payWallet = ws[0];
 
       if (payWallet.addr) {
         return {
-          addr: payWallet.addr,
+          addresses: [payWallet.addr],
           index: null,
         };
       }
 
-      let xpubKey = await DashHd.fromXKey(payWallet.xpub);
+      let xKey = await DashHd.fromXKey(payWallet.xpub);
 
-      let now = Date.now();
-      let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
+      let hdpath = ""; // TODO include in xKey
+      let offset = await indexPayAddrs(payWallet.name, xKey, hdpath, now);
       await config.store.save(safe.cache);
 
-      let addressKey = await deriveAddress(xpubKey, nextIndex);
-      let addr = await DashHd.toAddr(addressKey.publicKey);
-      return {
-        addr,
-        index: nextIndex,
-      };
+      let payAddrs = await wallet._nextWalletAddrs({
+        xKey,
+        offset,
+        count,
+      });
+      await config.store.save(safe.cache);
+
+      return { index: offset, addresses: payAddrs };
     };
 
     /**
@@ -779,27 +786,77 @@
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} opts.count
+     * @param {Number} opts.now
      */
-    wallet.createNextReceiveAddr = async function ({ handle, count = 1 }) {
+    wallet.getNextChangeAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+    }) {
+      let addrsInfo = await wallet._getNextXPrvAddrs({
+        handle,
+        count,
+        usage: 1,
+        now,
+      });
+
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} opts.now
+     */
+    wallet.getNextReceiveAddrs = async function ({
+      handle,
+      count = 1,
+      now = Date.now(),
+    }) {
+      let addrsInfo = await wallet._getNextXPrvAddrs({
+        handle,
+        count,
+        usage: 0,
+        now,
+      });
+
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.count
+     * @param {Number} opts.now
+     * @param {Number} opts.usage
+     */
+    wallet._getNextXPrvAddrs = async function ({ handle, count, usage, now }) {
       let ws = await wallet.findPrivateWallets({ handle });
-      let privateWallet = ws[0];
+      let privWallet = ws[0];
 
       ws.forEach(_transitionPhrase); // TODO remove
 
-      if (!privateWallet.phrase?.length) {
+      if (!privWallet.phrase?.length) {
         // TODO generate new WIF
-        throw new Error("not implemented");
+        throw new Error("generate new WIF not implemented");
       }
 
-      // TODO get back NextIndex
-      let receiveAddrsInfo = await wallet._nextWalletAddrs({
-        handle: handle,
-        usage: 0,
-        count: count,
+      let account = 0; // main
+      let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+      let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+      let offset = await indexPayAddrs(privWallet.name, xKey, hdpath, now);
+      await config.store.save(safe.cache);
+
+      let receiveAddrs = await wallet._nextWalletAddrs({
+        xKey,
+        count,
+        offset,
       });
       await config.store.save(safe.cache);
 
-      return receiveAddrsInfo;
+      return { index: offset, addressses: receiveAddrs };
     };
 
     /**
@@ -816,10 +873,11 @@
       utxos,
       now = Date.now(),
     }) {
-      let address = await wallet.getNextPayAddr({ handle, now });
+      let count = 1;
+      let addrsInfo = await wallet.getNextPayAddrs({ handle, count, now });
       let dirtyTx = await wallet.createDirtyTx({
         inputs: utxos,
-        output: { address, satoshis },
+        output: { address: addrsInfo.addresses[0], satoshis: satoshis },
       });
 
       let result = await dashsight.instantSend(dirtyTx.transaction).catch(
@@ -920,8 +978,21 @@
       let hasChange = change.satoshis > DashApi.DUST;
 
       if (hasChange) {
-        let pathInfo = { handle: "main", usage: 1 };
-        change.address = await wallet._nextWalletAddr(pathInfo);
+        let count = 1;
+        let handle = "main";
+        let account = 0; // main
+        let usage = 1;
+
+        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+        let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+        // XXX is handle always name? (it is for main)
+        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
+        await config.store.save(safe.cache);
+
+        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
+
+        change.address = addrs[0];
         outputs.push(change);
         feeEstimate += DashTx.OUTPUT_SIZE;
       } else {
@@ -943,6 +1014,7 @@
       return summary;
     };
 
+    // XXX pass in known-good change addrs
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
@@ -982,8 +1054,21 @@
       let hasChange = change.satoshis > DashApi.DUST;
 
       if (hasChange) {
-        let pathInfo = { handle: "main", usage: 1 };
-        change.address = await wallet._nextWalletAddr(pathInfo);
+        let count = 1;
+        let handle = "main";
+        let account = 0; // main
+        let usage = 1;
+
+        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+        let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+        // TODO should be name, not handle (though they're the same for main)
+        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
+        await config.store.save(safe.cache);
+
+        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
+
+        change.address = addrs[0];
         outputs.push(change);
         feeEstimate += DashTx.OUTPUT_SIZE;
       } else {
@@ -1301,6 +1386,7 @@
       return txInfo;
     }
 
+    // TODO nix
     /**
      * @param {Object} opts
      * @param {String} opts.handle
@@ -1322,6 +1408,7 @@
       nextPayAddr = payWallet.addr;
       if (!nextPayAddr) {
         let xpubKey = await DashHd.fromXKey(payWallet.xpub);
+
         let nextIndex = await indexPayAddrs(payWallet.name, xpubKey, "", now);
         await config.store.save(safe.cache);
 
@@ -1362,6 +1449,7 @@
         await promise;
 
         let wifInfo = await wallet.findWif({
+          address: utxo.address,
           addr: utxo.address,
           _error: true,
         });
@@ -1388,12 +1476,14 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.addr - pay address
+     * @param {String} opts.address - pay address
+     * @param {String} [opts.addr] - deprecated, use address
      * @param {Boolean} opts._error - for internal use
      * @returns {Promise<WalletWif?>} - addr info with wif
      */
-    wallet.findWif = async function ({ addr, _error }) {
-      let wifData = await wallet._findWif(addr).catch(function (err) {
+    wallet.findWif = async function ({ address, addr, _error }) {
+      address = address || addr || "";
+      let wifData = await wallet._findWif(address).catch(function (err) {
         if (_error || "E_NO_PRIVATE_KEY" !== err.code) {
           throw err;
         }
@@ -1402,21 +1492,26 @@
         return null;
       }
 
-      let addrInfo = safe.cache.addresses[addr];
-      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
+      let addrInfo = safe.cache.addresses[address];
+      return Object.assign(
+        { address: address, addr: address, wif: wifData.wif },
+        addrInfo,
+      );
     };
 
     /**
-     * @param {String} addr - pay address
+     * @param {String} address - pay address
      */
-    wallet._findWif = async function (addr) {
-      let addrInfo = safe.cache.addresses[addr];
+    wallet._findWif = async function (address) {
+      let addrInfo = safe.cache.addresses[address];
       if (!addrInfo) {
-        throw new Error(`cannot find address info for '${addr}'`);
+        throw new Error(`cannot find address info for '${address}'`);
       }
 
       if (!addrInfo.hdpath) {
-        let err = new Error(`private key for '${addr}' has not been imported`);
+        let err = new Error(
+          `private key for '${address}' has not been imported`,
+        );
         //@ts-ignore
         err.code = "E_NO_PRIVATE_KEY";
         throw err;
@@ -1426,14 +1521,14 @@
         return wallet.name === addrInfo.wallet;
       });
       if (!w) {
-        throw new Error(`cannot find wallet for '${addr}'`);
+        throw new Error(`cannot find wallet for '${address}'`);
       }
 
       if ("*" === addrInfo.hdpath) {
         let wifInfo = w.wifs.find(
           /** @param {WifInfo} wifInfo */
           function (wifInfo) {
-            return addr === wifInfo.addr;
+            return address === (wifInfo.address || wifInfo.addr);
           },
         );
         return {
@@ -1452,11 +1547,11 @@
       let xprvKey = await DashHd.derivePath(walletKey, addrInfo.hdpath);
 
       let addressKey = await deriveAddress(xprvKey, addrInfo.index);
-      let address = await DashHd.toAddr(addressKey.publicKey);
+      let _address = await DashHd.toAddr(addressKey.publicKey);
 
-      if (address !== addr) {
+      if (_address !== address) {
         throw new Error(
-          `check fail: hdpath '${addrInfo.hdpath}/${addrInfo.index}' for '${addr}' derived '${address}'`,
+          `check fail: hdpath '${addrInfo.hdpath}/${addrInfo.index}' for '${address}' derived '${_address}'`,
         );
       }
       if (!addressKey.privateKey) {
@@ -1470,17 +1565,19 @@
 
     /**
      * @param {Object} opts
-     * @param {String} opts.addr - pay address
+     * @param {String} opts.address - pay address
+     * @param {String} [opts.addr] - deprecated, use address
      * @param {Boolean} opts._error - for internal use
      * @returns {Promise<WalletWif?>} - addr info with wif
      */
-    wallet.removeWif = async function ({ addr }) {
-      let addrInfo = safe.cache.addresses[addr];
+    wallet.removeWif = async function ({ address, addr }) {
+      address = address || addr || "";
+      let addrInfo = safe.cache.addresses[address];
       if (!addrInfo) {
         return null;
       }
 
-      let wifData = await wallet._findWif(addr).catch(function (err) {
+      let wifData = await wallet._findWif(address).catch(function (err) {
         if ("E_NO_PRIVATE_KEY" !== err.code) {
           throw err;
         }
@@ -1500,29 +1597,35 @@
       await config.store.save(safe.cache);
 
       // TODO should there be an importAddr as compliment of importWif?
-      delete safe.cache.addresses[addr];
+      delete safe.cache.addresses[address];
       await config.store.save(safe.cache);
 
-      return Object.assign({ addr: addr, wif: wifData.wif }, addrInfo);
+      return Object.assign(
+        { address: addr, addr: addr, wif: wifData.wif },
+        addrInfo,
+      );
     };
 
     /**
      * Shows balance, tx, and wallet stats for the given pay address
      * @param {Object} opts
-     * @param {Array<String>} opts.addrs
+     * @param {Array<String>} opts.addresses
+     * @param {Array<String>} [opts.addrs] - deprecated, use addresses
      * @param {Number} opts.now
      * @param {Number} [opts.staletime]
      * @returns {Promise<Array<WalletAddress>>}
      */
     wallet.stat = async function ({
+      addresses,
       addrs,
       now = Date.now(),
       staletime = config.staletime,
     }) {
       /** @type {Array<WalletAddress>} */
       let addrInfos = [];
+      addresses = addresses || addrs || [];
 
-      await addrs.reduce(async function (promise, addr) {
+      await addresses.reduce(async function (promise, addr) {
         await promise;
 
         let addrInfo = safe.cache.addresses[addr];
@@ -1536,7 +1639,7 @@
         await wallet._updateAddrInfo(addr, now, staletime);
         addrInfo = safe.cache.addresses[addr];
 
-        addrInfos.push(Object.assign({ addr: addr }, addrInfo));
+        addrInfos.push(Object.assign({ address: addr, addr: addr }, addrInfo));
       }, Promise.resolve());
 
       await config.store.save(safe.cache);
@@ -1790,7 +1893,14 @@
         await wallet._updateAddrInfo(addr, now, staletime);
       }, Promise.resolve());
 
-      return await indexPayAddrs(walletName, xprvKey, hdpath, now, staletime);
+      let nextIndex = await indexPayAddrs(
+        walletName,
+        xprvKey,
+        hdpath,
+        now,
+        staletime,
+      );
+      return nextIndex;
     }
 
     /**
@@ -2159,10 +2269,13 @@
    * @param {Object} opts
    * @param {String} opts.handle
    * @param {String} opts.xpub
-   * @param {String} opts.addr
+   * @param {String} opts.address
+   * @param {String} [opts.addr] - deprecated, use address
    * @returns {PayWallet}
    */
-  Wallet.generatePayWallet = function ({ handle, xpub, addr }) {
+  Wallet.generatePayWallet = function ({ handle, xpub, addr, address }) {
+    address = address || addr || "";
+
     let d = new Date();
     return {
       contact: handle,
@@ -2170,7 +2283,8 @@
       label: handle,
       name: handle.toLowerCase(),
       priority: d.valueOf(),
-      addr: addr,
+      address: address,
+      addr: address,
       xpub: xpub,
       created_at: d.toISOString(),
       archived_at: null,

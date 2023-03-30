@@ -135,7 +135,7 @@ Generates a complete `PayWallet` object.
   "contact": "@johndoe",
   "priority": 1668919000655,
   "xpub": "xpubXXXX...XXXX",
-  "addr": "Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "address": "Xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "created_at": "2022-02-22T22:02:22.000Z",
   "archived_at": null
 }
