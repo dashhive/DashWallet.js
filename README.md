@@ -2,7 +2,28 @@
 
 A more civilized DASH Wallet SDK for a less civilized age...
 
+# Table of Contents
+
+- Install
+  - Web Browsers
+  - Node.js & Bundlers
+- Usage
+- API
+
 # Install
+
+## Web Browsers
+
+```html
+<script src="https://unpkg.com/@dashincubator/secp256k1@1.x/secp256k1.js"></script>
+<script src="https://unpkg.com/dashkeys@1.x/dashkeys.js"></script>
+<script src="https://unpkg.com/dashsight@1.x/dashsight.js"></script>
+<script src="https://unpkg.com/dashsight@1.x/dashsocket.js"></script>
+<script src="https://unpkg.com/dashtx@0.x/dashtx.js"></script>
+<script src="https://unpkg.com/dashwallet@0.5/dashwallet.js"></script>
+```
+
+## Node.js & Bundlers
 
 1. Install [`node`](https://webinstall.dev/node)
 
@@ -14,11 +35,24 @@ A more civilized DASH Wallet SDK for a less civilized age...
    curl.exe https://webi.ms/node | powershell
    ```
 
-2. Install `dashwallet-cli`
+2. Install the `dashwallet` library
+
    ```sh
-   npm install --save dashwallet@0.5
+   npm install --save dashwallet0.5
    npm install --save @dashincubator/secp256k1@1.7
    ```
+
+3. Install `dashwallet-cli` for testing locally
+   ```sh
+   npm install --location=global dashwallet-cli@0.5
+   ```
+
+# Usage
+
+```js
+// TODO
+// (look at dashwallet-cli to see current usage)
+```
 
 # Alpha API (will change)
 
