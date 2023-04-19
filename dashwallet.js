@@ -152,6 +152,15 @@
    */
 
   /**
+   * How we interpret a coin for selection and usage
+   * @typedef CoinInfo
+   * @prop {Number} satoshis
+   * @prop {Number} faceValue
+   * @prop {Number} stamps
+   * @prop {Number} dust
+   */
+
+  /**
    * @typedef WalletAddress
    * @prop {String} [addr] - may be added (but not stored)
    * @prop {Number} checked_at
@@ -1800,6 +1809,36 @@
     }
 
     return wallet;
+  };
+
+  /**
+   * Returns clamped value, number of stamps, and unusable dust
+   * @param {Number} MIN_DENOM - typically 100000 sats
+   * @param {Number} STAMP - typically 200 sats
+   * @param {Number} satoshis
+   * @returns {CoinInfo} - faceValue, stamps, etc
+   */
+  Wallet._parseCoinInfo = function (MIN_DENOM, STAMP, satoshis) {
+    let mdash = satoshis / MIN_DENOM;
+    mdash = Math.floor(mdash);
+
+    let udash = satoshis % MIN_DENOM;
+    let dust = udash % STAMP;
+
+    let stamps = udash / STAMP;
+    stamps = Math.floor(stamps);
+
+    let faceValue = mdash * MIN_DENOM;
+    faceValue = Math.round(faceValue);
+
+    let coinInfo = {
+      satoshis,
+      faceValue,
+      stamps,
+      dust,
+    };
+
+    return coinInfo;
   };
 
   /**
