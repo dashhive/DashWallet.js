@@ -44,6 +44,9 @@
   DashApi.DUST = DUST;
   DashApi.FEE = FEE;
 
+  const SATOSHIS = 100000000;
+  Wallet.SATOSHIS = SATOSHIS;
+
   /**
    * @template {Pick<CoreUtxo, "satoshis">} T
    * @param {Array<T>} utxos
@@ -158,6 +161,18 @@
    * @prop {Number} faceValue
    * @prop {Number} stamps
    * @prop {Number} dust
+   */
+
+  /**
+   * How we interpret how a coin will be denominated
+   * @typedef {CoinInfo & DenomInfoPartial} DenomInfo
+   *
+   * @typedef DenomInfoPartial
+   * @prop {Array<Number>} denoms
+   * @prop {Number} stampsPerCoin
+   * @prop {Number} fee
+   * @prop {Boolean} transactable - if stampsPerCoin >= 2
+   * @prop {Number} stampsNeeded - if stampsPerCoin < 2
    */
 
   /**
@@ -296,6 +311,33 @@
   Wallet.getBalance = DashApi.getBalance;
   Wallet.toDash = DashApi.toDash;
   Wallet.toDuff = DashApi.toDuff;
+  Wallet.DENOM_AMOUNTS = [
+    1000, 500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01,
+    0.005, 0.002, 0.001,
+  ];
+  // Ex: we could add additional denoms via some setting
+  if (false) {
+    Wallet.DENOM_AMOUNTS.push(0.0005);
+    Wallet.DENOM_AMOUNTS.push(0.0002);
+    Wallet.DENOM_AMOUNTS.push(0.0001);
+  }
+
+  /** @type {Array<Number>} */
+  Wallet.DENOM_SATS = [];
+  amountsToSats(Wallet.DENOM_AMOUNTS, Wallet.DENOM_SATS);
+
+  /**
+   * @param {Array<Number>} amounts
+   * @param {Array<Number>} sats
+   */
+  function amountsToSats(amounts, sats) {
+    for (let amount of amounts) {
+      let satoshis = amount * SATOSHIS;
+      satoshis = Math.round(satoshis);
+      sats.push(satoshis);
+    }
+    return sats;
+  }
 
   /**
    * @param {Config} config
@@ -1839,6 +1881,129 @@
     };
 
     return coinInfo;
+  };
+
+  /**
+   * @param {Array<Number>} DENOMS
+   * @param {Number} STAMP
+   * @param {CoinInfo} coinInfo
+   * @return {DenomInfo}
+   */
+  Wallet._denominateCoin = function (DENOMS, STAMP, coinInfo) {
+    let denoms = [];
+
+    let remainder = coinInfo.faceValue;
+    for (let denom of DENOMS) {
+      while (remainder >= denom) {
+        denoms.push(denom);
+        remainder -= denom;
+      }
+    }
+
+    let fees = DashTx.appraise({
+      inputs: [coinInfo],
+      outputs: denoms,
+    });
+    let fee = fees.max;
+
+    let transactable = false;
+    let stampsPerCoin = 0;
+    let MIN_STAMPS = 2;
+    let stampsNeeded = MIN_STAMPS * denoms.length;
+    stampsNeeded -= coinInfo.stamps;
+    stampsNeeded = Math.max(0, stampsNeeded);
+
+    let denomInfo = Object.assign(coinInfo, {
+      denoms,
+      stampsPerCoin,
+      fee,
+      transactable,
+      stampsNeeded,
+    });
+
+    denomInfo.stampsPerCoin = _stampsPerCoin(STAMP, denomInfo);
+    denomInfo.transactable = denomInfo.stampsPerCoin >= MIN_STAMPS;
+
+    return denomInfo;
+  };
+
+  /**
+   * @param {Number} STAMP
+   * @param {DenomInfo} denomInfo
+   * @return {Number} - stampsPerCoin (zero if undefined, negative if not transactable)
+   */
+  function _stampsPerCoin(STAMP, denomInfo) {
+    let stamps = denomInfo.stamps;
+    let extraDust = denomInfo.dust - denomInfo.fee;
+    while (extraDust < 0) {
+      stamps -= 1;
+      extraDust += STAMP;
+    }
+
+    let stampsPerCoin = 0;
+    let numCoins = denomInfo.denoms.length;
+    if (numCoins > 0) {
+      stampsPerCoin = stamps / denomInfo.denoms.length;
+      stampsPerCoin = Math.floor(stampsPerCoin);
+    }
+
+    return stampsPerCoin;
+  }
+
+  /**
+   * @param {Array<Number>} DENOMS
+   * @param {Number} STAMP
+   * @param {Array<CoinInfo>} coinInfos
+   * @return {DenomInfo}
+   */
+  Wallet._denominateCoins = function (DENOMS, STAMP, coinInfos) {
+    let denoms = [];
+
+    let satoshis = 0;
+    for (let coinInfo of coinInfos) {
+      satoshis += coinInfo.satoshis;
+      //faceValue += coinInfo.faceValue;
+      //stamps += coinInfo.stamps;
+      //dust += coinInfo.dust;
+    }
+
+    let MIN_DENOM_INDEX = DENOMS.length - 1;
+    let MIN_DENOM = DENOMS[MIN_DENOM_INDEX];
+    let coinInfo = Wallet._parseCoinInfo(MIN_DENOM, STAMP, satoshis);
+
+    let remainder = coinInfo.faceValue;
+    for (let denom of DENOMS) {
+      while (remainder >= denom) {
+        denoms.push(denom);
+        remainder -= denom;
+      }
+    }
+
+    let fees = DashTx.appraise({
+      inputs: coinInfos,
+      outputs: denoms,
+    });
+    let fee = fees.max;
+
+    let transactable = false;
+    let stampsPerCoin = 0;
+    let MIN_STAMPS = 2;
+    let stampsNeeded = MIN_STAMPS * denoms.length;
+    stampsNeeded -= coinInfo.stamps;
+    stampsNeeded = Math.max(0, stampsNeeded);
+
+    let denomInfo = Object.assign(coinInfo, {
+      denoms,
+      stampsPerCoin,
+      fee,
+      transactable,
+      stampsNeeded,
+    });
+
+    denomInfo.stampsPerCoin = _stampsPerCoin(STAMP, denomInfo);
+    denomInfo.transactable = denomInfo.stampsPerCoin > MIN_STAMPS;
+
+    return denomInfo;
   };
 
   /**
