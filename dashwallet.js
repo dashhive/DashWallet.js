@@ -47,6 +47,14 @@
   const SATOSHIS = 100000000;
   Wallet.SATOSHIS = SATOSHIS;
 
+  /** @param {Number} satoshis */
+  function toDustFixed(satoshis) {
+    let dashNum = satoshis / SATOSHIS;
+    let dash = dashNum.toFixed(8);
+    dash = dash.slice(0, 6) + " " + dash.slice(6);
+    return dash;
+  }
+
   /**
    * @template {Pick<CoreUtxo, "satoshis">} T
    * @param {Array<T>} utxos
@@ -197,6 +205,8 @@
    * @prop {Safe} safe
    * @prop {Store} store
    * @prop {DashSightPartial} dashsight
+   * @prop {Array<Number>} denomAmounts - TODO move to settings
+   * @prop {Array<Number>} denomSatoshis - TODO move to settings
    */
 
   /**
@@ -349,6 +359,11 @@
     let safe = config.safe;
     let wallet = {};
     let dashsight = config.dashsight;
+
+    if (!config.denomAmounts?.length) {
+      config.denomAmounts = Wallet.DENOM_AMOUNTS;
+    }
+    config.denomSatoshis = amountsToSats(config.denomAmounts, []);
 
     if ("undefined" === typeof config.staletime) {
       config.staletime = 60 * 1000;
@@ -999,6 +1014,273 @@
         staletime,
       });
       // TODO lookup addresses here(?)
+
+      // get the ideal number of coins
+      let tx = await wallet.createTx({
+        inputs: utxos,
+        addresses: addrsInfo.addresses,
+        satoshis: satoshis,
+      });
+
+      let result = await dashsight.instantSend(tx.transaction).catch(
+        /** @param {Error} err */
+        function (err) {
+          //@ts-ignore
+          err.failedTx = tx.transaction;
+          //@ts-ignore
+          err.failedUtxos = tx.inputs;
+          throw err;
+        },
+      );
+      //@ts-ignore TODO type summary
+      await wallet.captureTx({ summary: tx, now });
+
+      return Object.assign({ response: result }, tx);
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs] - which inputs to use / send
+     * @param {Array<String>} [opts.addresses] - which addresses to use
+     * @param {Number} [opts.satoshis] - how much to send
+     * @param {Number} [opts.now] - ms
+     * @param {Number} [opts.staletime]
+     * x@param {Array<import('dashtx').TxOutput>} opts.outputs
+     */
+    wallet.createTx = async function ({
+      inputs,
+      addresses,
+      satoshis,
+      now,
+      staletime,
+    }) {
+      let txInfoRaw = await wallet.denominate({
+        inputs,
+        addresses,
+        satoshis,
+        now,
+        staletime,
+      });
+      if (!txInfoRaw.inputs) {
+        let err = new Error(`inconceivable`);
+        //@ts-ignore
+        err.code = "INCONCEIVABLE";
+        throw err;
+      }
+
+      let dashTx = DashTx.create();
+      let keys;
+      try {
+        keys = await wallet._utxosToPrivKeys(txInfoRaw.inputs);
+      } catch (e) {
+        throw e;
+      }
+      if (!keys) {
+        return;
+      }
+
+      let txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+      return txInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<String>} [opts.addresses]
+     * @param {Number} [opts.satoshis]
+     * x@param {Array<import('dashtx').TxOutput>} opts.outputs
+     * @param {Number} [opts.now] - ms
+     * @param {Number} [opts.staletime]
+     */
+    wallet.denominate = async function ({
+      inputs,
+      addresses,
+      satoshis,
+      now,
+      staletime,
+    }) {
+      // TODO the async nature of mustSelectInputs should be removed
+      // TODO try first to hit the target output values
+      inputs = mustSelectInputs({
+        inputs: inputs,
+        satoshis: satoshis,
+        now: now,
+      });
+      let fauxTxos = inputs;
+      //let fauxTxos = await inputListToFauxTxos(wallet, inputList);
+      let balance = Wallet.getBalance(fauxTxos);
+
+      // TODO XXX check determine if it's already denominated
+      // - last 5 digits mod 200 with no leftover
+      //   - 0.000x xxxx % 200 === 0
+      // - last 5 digits are over 2 * 200
+      //   - 0.000x xxxx > 400
+      // - has exactly one significant digit of denominated value
+      //   - xxxx.xxx0 0000
+
+      // 0.0001 0000
+      let dusty = 10000;
+
+      // can give at least 3 txs to at least 2 coins
+      let sixFees = 1200;
+
+      if (balance <= dusty) {
+        let balanceStr = toDustFixed(balance);
+        let err = new Error(`can't redenominate ${balanceStr}`);
+        //@ts-ignore
+        err.code = "E_NO_DENOM";
+        //@ts-ignore
+        err.satoshis = balance;
+        throw err;
+      }
+
+      let denoms = config.denomAmounts.map(function (v) {
+        return v * SATOSHIS;
+      });
+
+      /** @type {Object<String, String>} */
+      let denomStrs = {};
+      for (let denom of denoms) {
+        denomStrs[denom] = toDustFixed(denom);
+      }
+
+      let dust = balance - sixFees;
+      /** @type {Object<String, Number>} */
+      let newCoins = {};
+      let outputs = [];
+      for (let denom of denoms) {
+        let n = dust / denom;
+        n = Math.floor(n);
+        if (!n) {
+          continue;
+        }
+
+        // less fee estimate per each output
+        dust = dust % denom;
+        let denomStr = denomStrs[denom];
+        newCoins[denomStr] = n;
+        for (let i = 0; i < n; i += 1) {
+          outputs.push({
+            satoshis: denom,
+          });
+        }
+      }
+      dust += sixFees;
+      let cost = dust;
+
+      console.log(newCoins);
+
+      let fees = DashTx.appraise({ inputs: inputs, outputs: outputs });
+      let feeStr = toDustFixed(fees.mid);
+
+      if (dust < fees.mid) {
+        throw new Error("dust < fee recalc not implemented");
+      }
+
+      dust -= fees.mid;
+
+      let stampSats = 200;
+      let numStamps = dust / stampSats;
+      let dustDust = dust % 200;
+      numStamps = Math.floor(numStamps);
+      if (numStamps < outputs.length) {
+        throw new Error("numStamps < numOutputs recalc not implemented");
+      }
+
+      let stampsExtra = numStamps % outputs.length;
+      let stampsEach = numStamps / outputs.length;
+      stampsEach = Math.floor(stampsEach);
+
+      outputs.forEach(function (output) {
+        output.satoshis += stampsEach * stampSats;
+      });
+      outputs
+        .slice()
+        .reverse()
+        .some(function (output, i) {
+          if (stampsExtra === 0) {
+            return true;
+          }
+
+          output.satoshis += stampSats;
+          stampsExtra -= 1;
+        });
+
+      console.info(outputs);
+      console.info(
+        `Fee:  ${feeStr}  (${inputs.length} inputs, ${outputs.length} outputs)`,
+      );
+      console.info(
+        `Stamps: ${numStamps} x 0.0000 0200 (${stampsEach} per output)`,
+      );
+
+      let dustStr = toDustFixed(dust);
+      let dustDustStr = toDustFixed(dustDust);
+      console.info(`Dust: ${dustDustStr} (${dustStr})`);
+      console.info(``);
+
+      let costStr = toDustFixed(cost);
+      console.info(`Cost to Denominate: ${costStr}`);
+      console.info(``);
+
+      // TODO handle should link to hash of seed and account # of other wallet
+      // TODO deposit into coinjoin account
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle: "main",
+        count: outputs.length,
+      });
+      console.info(addrsInfo.addresses);
+
+      // TODO use knuthShuffle or explicit crypto random
+      let payAddresses = addrsInfo.addresses.slice(0);
+      fauxTxos.sort(Math.random);
+      outputs.sort(Math.random);
+      for (let output of outputs) {
+        output.address = payAddresses.pop();
+      }
+
+      for (let output of outputs) {
+        //@ts-ignore TODO bad export
+        let pkh = await DashKeys.addrToPkh(output.address);
+        //@ts-ignore TODO bad export
+        let pkhHex = DashKeys.utils.bytesToHex(pkh);
+        Object.assign(output, { pubKeyHash: pkhHex });
+      }
+
+      let txInfoRaw = {
+        inputs: fauxTxos,
+        outputs: outputs,
+      };
+      return txInfoRaw;
+    };
+
+    /**
+     * Send with change back to main wallet
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Boolean} [opts.allowReuse] - allow non-hd addresses
+     * @param {Number} opts.satoshis - duffs/satoshis
+     * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - ms old after which to sync
+     */
+    // TODO "exposedSend" suggested by onetime
+    wallet.sendWithFingerprint = async function ({
+      handle,
+      allowReuse = false,
+      satoshis,
+      utxos,
+      now = Date.now(),
+      staletime = config.staletime,
+    }) {
+      let count = 1;
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle,
+        allowReuse,
+        count,
+        now,
+        staletime,
+      });
 
       let dirtyTx = await wallet.createDirtyTx({
         inputs: utxos,
@@ -1674,7 +1956,7 @@
         throw new Error(`cannot find wallet for '${address}'`);
       }
 
-      let isLooseWif = hasLooseWif();
+      let isLooseWif = hasLooseWif(addrInfo);
       if (isLooseWif) {
         let wifInfo = w.wifs.find(
           /** @param {WifInfo} wifInfo */
