@@ -134,11 +134,11 @@
   };
 
   /**
-   * @param {Number} duffs - DASH sastoshis
+   * @param {Number} satoshis
    * @returns {Number} - float
    */
-  DashApi.toDash = function (duffs) {
-    let floatBalance = parseFloat((duffs / DUFFS).toFixed(8));
+  DashApi.toDash = function (satoshis) {
+    let floatBalance = parseFloat((satoshis / DUFFS).toFixed(8));
     return floatBalance;
   };
 
@@ -354,9 +354,9 @@
       config.staletime = 60 * 1000;
     }
 
-    // TODO rename addContactByXPub, addContactByAddr?
+    // TODO rename shareXPubWith, receiveXPubFrom, receiveAddrFrom?
     /** @type Befriend */
-    wallet.befriend = async function ({ handle, xpub, addr }) {
+    wallet.contact = async function ({ handle, xpub, addr }) {
       if (!handle) {
         throw new Error(`no 'handle' given`);
       }
@@ -367,7 +367,7 @@
       let txWallet;
       let hasAddr = xpub || addr;
       if (hasAddr) {
-        txWallet = await _getPayWallet(handle, xpub, addr);
+        txWallet = await _getOrCreateWallet(handle, xpub, addr);
         // most recently added will sort first;
         txWallet.priority = Date.now();
         await config.store.save(safe.payWallets);
@@ -421,6 +421,7 @@
       let selfXPub = await DashHd.toXPub(xprvKey);
       return [selfXPub, txWallet];
     };
+    wallet.befriend = wallet.contact;
 
     /**
      * @param {String} handle - contact's handle
@@ -428,7 +429,7 @@
      * @param {String} address
      * @returns {Promise<PayWallet>}
      */
-    async function _getPayWallet(handle, xpub, address) {
+    async function _getOrCreateWallet(handle, xpub, address) {
       if (xpub) {
         await Wallet.assertXPub(xpub);
       }
@@ -445,7 +446,7 @@
           }
 
           if (address.length > 0) {
-            return address === wallet.addr;
+            return address === wallet.address || wallet.addr;
           }
 
           return false;
@@ -476,11 +477,13 @@
       let balances = {};
 
       Object.values(safe.cache.addresses).forEach(function (addrInfo) {
-        if (!addrInfo.hdpath) {
+        let isSpendable = hasWif(addrInfo);
+        if (!isSpendable) {
           return;
         }
 
-        if ("*" === addrInfo.hdpath) {
+        let isLooseWif = hasLooseWif(addrInfo);
+        if (isLooseWif) {
           // ignore wifs
         }
 
@@ -507,8 +510,8 @@
     /**
      * @param {Object} opts
      * @param {Array<String>} opts.wifs
-     * @param {Number} opts.now - ms since epoch (e.g. Date.now())
-     * @param {Number} opts.staletime - when to refresh
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - when to refresh
      * @returns {Promise<Array<WalletAddress>>}
      * TODO - multiuse: true
      */
@@ -523,7 +526,7 @@
         let addr = await DashKeys.wifToAddr(wif);
         let addrInfo = safe.cache.addresses[addr];
 
-        await indexWifAddr(addr, now, staletime);
+        await indexNonHdAddr("wifs", addr, now, staletime);
 
         addrInfos.push(
           Object.assign(
@@ -564,33 +567,42 @@
     };
 
     /**
-     * @returns {Promise<Array<CoreUtxo>>}
+     * @returns {Array<CoreUtxo>}
      */
-    wallet.utxos = async function () {
+    wallet.utxos = function () {
       /** @type {Array<Required<MiniUtxo>>} */
       let utxos = [];
 
-      Object.keys(safe.cache.addresses).forEach(function (addr) {
+      let addrs = Object.keys(safe.cache.addresses);
+      for (let addr of addrs) {
         let addrInfo = safe.cache.addresses[addr];
-        if (!addrInfo.hdpath) {
-          return;
+        let isSpendable = hasWif(addrInfo);
+        if (!isSpendable) {
+          continue;
         }
 
         if ("*" === addrInfo.hdpath) {
           // ignore wifs
         }
 
-        addrInfo.utxos.forEach(
-          /** @param {MiniUtxo} utxo */
-          function (utxo) {
-            let _utxo = Object.assign({ address: addr }, utxo);
-            utxos.push(_utxo);
-          },
-        );
-      });
+        for (let utxo of addrInfo.utxos) {
+          let _utxo = Object.assign({ address: addr }, utxo);
+          utxos.push(_utxo);
+        }
+      }
 
       return utxos;
     };
+
+    /** @param {WalletAddress} addrInfo */
+    function hasWif(addrInfo) {
+      return !!addrInfo.hdpath;
+    }
+
+    /** @param {WalletAddress} addrInfo */
+    function hasLooseWif(addrInfo) {
+      return "*" === addrInfo.hdpath;
+    }
 
     /**
      * Find the address that matches the prefix.
@@ -738,21 +750,56 @@
      * @param {Object} opts
      * @param {String} opts.handle
      * @param {Number} opts.count
-     * @param {Number} opts.now
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
      */
     wallet.getNextPayAddrs = async function ({
       handle,
       count = 1,
       now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
     }) {
-      let ws = await wallet.findPayWallets({ handle });
-      let payWallet = ws[0];
+      let wallets = await wallet.findPayWallets({ handle });
+      let addrsInfo = await wallet._getNextPayAddrs({ wallets, count, now });
+      if (!addrsInfo?.addresses?.length) {
+        addrsInfo = await wallet._getNextLooseAddrs({
+          wallets,
+          count,
+          now,
+          staletime,
+          allowReuse,
+        });
+        if (!addrsInfo?.addresses?.length) {
+          let err = new Error(`no xpub nor suitable loose addresses found`);
+          //@ts-ignore
+          err.code = "E_NO_PAY_ADDR";
+          throw err;
+        }
+      }
 
-      if (payWallet.addr) {
-        return {
-          addresses: [payWallet.addr],
-          index: null,
-        };
+      return addrsInfo;
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<PayWallet>} opts.wallets
+     * @param {Number} opts.count
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
+     */
+    wallet._getNextPayAddrs = async function ({
+      wallets,
+      count = 1,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {
+      let payWallet = wallets[0]; // newest is first
+      if (!payWallet.xpub) {
+        return null;
       }
 
       let xKey = await DashHd.fromXKey(payWallet.xpub);
@@ -770,6 +817,72 @@
 
       return { index: offset, addresses: payAddrs };
     };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<PayWallet>} opts.wallets
+     * @param {Number} [opts.count]
+     * @param {Number} [opts.now]
+     * @param {Number} [opts.staletime]
+     * @param {Boolean} [opts.allowReuse]
+     */
+    wallet._getNextLooseAddrs = async function ({
+      wallets,
+      count,
+      now = Date.now(),
+      staletime = config.staletime,
+      allowReuse = false,
+    }) {
+      let payWallet = wallets[0]; // newest is first
+      if (!payWallet.addr) {
+        return null;
+      }
+
+      // get all not-known-to-be-used addrs
+      let addrs = [];
+      for (let w of wallets) {
+        let addr = w.address || w.addr;
+        let used = isUsed(addr);
+        if (!used) {
+          // reverse to oldest to newest
+          addrs.unshift(addr);
+        }
+      }
+
+      // check if they have been used, just recently
+      let available = [];
+      let online = true;
+      if (online) {
+        for (let addr of addrs) {
+          let addrInfo = await wallet._updateAddrInfo(addr, now, staletime);
+          let used = isUsed(addrInfo.addr);
+          if (!used) {
+            available.push(addr);
+          }
+        }
+      }
+
+      if (!available.length) {
+        if (!allowReuse) {
+          let err = new Error(
+            `no unused addresses are available (set 'allowReuse' to use the most recent)`,
+          );
+          //@ts-ignore
+          err.code = `E_NO_UNUSED_ADDR`;
+          throw err;
+        }
+        available.push(payWallet.addr);
+      }
+
+      let addresses = available.slice(0, count);
+      return { index: -1, addresses: addresses };
+    };
+
+    /** @param {String} addr */
+    function isUsed(addr) {
+      let addrInfo = safe.cache.addresses[addr];
+      return addrInfo.txs?.length > 0;
+    }
 
     /**
      * @param {import('dashhd').HDXKey} xKey
@@ -856,25 +969,37 @@
       });
       await config.store.save(safe.cache);
 
-      return { index: offset, addressses: receiveAddrs };
+      return { index: offset, addresses: receiveAddrs };
     };
 
     /**
      * Send with change back to main wallet
      * @param {Object} opts
      * @param {String} opts.handle
+     * @param {Boolean} [opts.allowReuse] - allow non-hd addresses
      * @param {Number} opts.satoshis - duffs/satoshis
      * @param {Array<CoreUtxo>?} [opts.utxos]
      * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     * @param {Number} [opts.staletime] - ms old after which to sync
      */
-    wallet.pay = async function ({
+    wallet.send = async function ({
       handle,
+      allowReuse = false,
       satoshis,
       utxos,
       now = Date.now(),
+      staletime = config.staletime,
     }) {
       let count = 1;
-      let addrsInfo = await wallet.getNextPayAddrs({ handle, count, now });
+      let addrsInfo = await wallet.getNextPayAddrs({
+        handle,
+        allowReuse,
+        count,
+        now,
+        staletime,
+      });
+      // TODO lookup addresses here(?)
+
       let dirtyTx = await wallet.createDirtyTx({
         inputs: utxos,
         output: { address: addrsInfo.addresses[0], satoshis: satoshis },
@@ -894,6 +1019,30 @@
       await wallet.captureDirtyTx({ summary: dirtyTx, now });
 
       return Object.assign({ response: result }, dirtyTx);
+    };
+
+    /**
+     * DEPRECATED, use wallet.send (renamed)
+     * @param {Object} opts
+     * @param {String} opts.handle
+     * @param {Number} opts.satoshis - duffs/satoshis
+     * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {Number} [opts.now] - ms since epoch (e.g. Date.now())
+     */
+    wallet.pay = async function ({
+      handle,
+      satoshis,
+      utxos,
+      now = Date.now(),
+    }) {
+      console.warn("wallet.pay is deprecated, use wallet.send");
+      let result = await wallet.send({
+        handle,
+        satoshis,
+        utxos,
+        now,
+      });
+      return result;
     };
 
     /**
@@ -936,7 +1085,7 @@
       forceDonation = -1,
       now = Date.now(),
     }) {
-      inputs = await mustSelectInputs({ inputs, satoshis, now });
+      inputs = mustSelectInputs({ inputs, satoshis, now });
 
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [] });
@@ -1026,7 +1175,7 @@
       output,
       now = Date.now(),
     }) {
-      inputs = await mustSelectInputs({
+      inputs = mustSelectInputs({
         inputs: inputs,
         satoshis: output.satoshis,
         now: now,
@@ -1117,10 +1266,10 @@
     /**
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
-     * @param {Number} opts.satoshis
+     * @param {Number} [opts.satoshis]
      * @param {Number} [opts.now] - ms
      */
-    async function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
+    function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
       if (inputs) {
         return inputs;
       }
@@ -1132,7 +1281,7 @@
         throw err;
       }
 
-      let coins = await wallet.utxos();
+      let coins = wallet.utxos();
       inputs = DashApi.selectOptimalUtxos(coins, satoshis);
 
       if (!inputs.length) {
@@ -1508,7 +1657,8 @@
         throw new Error(`cannot find address info for '${address}'`);
       }
 
-      if (!addrInfo.hdpath) {
+      let isSpendable = hasWif(addrInfo);
+      if (!isSpendable) {
         let err = new Error(
           `private key for '${address}' has not been imported`,
         );
@@ -1524,7 +1674,8 @@
         throw new Error(`cannot find wallet for '${address}'`);
       }
 
-      if ("*" === addrInfo.hdpath) {
+      let isLooseWif = hasLooseWif();
+      if (isLooseWif) {
         let wifInfo = w.wifs.find(
           /** @param {WifInfo} wifInfo */
           function (wifInfo) {
@@ -1664,9 +1815,19 @@
 
         if (w.wifs) {
           for (let wifInfo of w.wifs) {
-            await indexWifAddr(wifInfo.addr, now, staletime);
+            await indexNonHdAddr("wifs", wifInfo.addr, now, staletime);
           }
           await config.store.save(safe.privateWallets);
+        }
+        {
+          // TODO transition to w.address, then to w.addresses
+          let addr = w.address || w.addr;
+          if (addr) {
+            await indexNonHdAddr(w.name, addr, now, staletime);
+          }
+          // for (let addrInfo of w.addresses) {
+          //   await indexNonHdAddr(w.name, addrInfo.address, now, staletime);
+          // }
         }
 
         _transitionPhrase(w); // TODO remove
@@ -1707,17 +1868,23 @@
     };
 
     /**
+     * @param {String} walletName
      * @param {String} addr
      * @param {Number} now - ex: Date.now()
      * @prop {Number} [staletime] - default 60_000 ms, set to 0 to force checking
      * @returns {Promise<void>}
      */
-    async function indexWifAddr(addr, now, staletime = config.staletime) {
+    async function indexNonHdAddr(
+      walletName,
+      addr,
+      now,
+      staletime = config.staletime,
+    ) {
       let addrInfo = safe.cache.addresses[addr];
       if (!addrInfo) {
         // TODO option for indexOrCreateWif effect vs stricter index-known-only
         addrInfo = Wallet.generateAddress({
-          wallet: "wifs",
+          wallet: walletName,
           hdpath: "*",
           index: -1,
         });
