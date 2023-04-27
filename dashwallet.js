@@ -1887,9 +1887,13 @@
    * @param {Array<Number>} DENOMS
    * @param {Number} STAMP
    * @param {CoinInfo} coinInfo
+   * @param {Boolean} force - make change to create stamps if necessary
    * @return {DenomInfo}
    */
-  Wallet._denominateCoin = function (DENOMS, STAMP, coinInfo) {
+  Wallet._denominateCoin = function (DENOMS, STAMP, coinInfo, force = false) {
+    if (force) {
+      return Wallet._denominateSelfPayCoins(DENOMS, STAMP, [coinInfo]);
+    }
     let denoms = [];
 
     let remainder = coinInfo.faceValue;
@@ -1923,6 +1927,92 @@
 
     denomInfo.stampsPerCoin = _stampsPerCoin(STAMP, denomInfo);
     denomInfo.transactable = denomInfo.stampsPerCoin >= MIN_STAMPS;
+
+    return denomInfo;
+  };
+
+  /**
+   * @param {Array<Number>} DENOMS
+   * @param {Number} STAMP
+   * @param {Array<CoinInfo>} coinInfos
+   * @param {Boolean} force - make change to create stamps if necessary
+   * @return {DenomInfo}
+   */
+  Wallet._denominateSelfPayCoins = function (
+    DENOMS,
+    STAMP,
+    coinInfos,
+    force = false,
+  ) {
+    let HEADER_SIZE = 10;
+    let INPUT_SIZE = 149;
+    let OUTPUT_SIZE = 34;
+    let MIN_STAMPS = 2;
+    let minStampFee = MIN_STAMPS * STAMP;
+
+    let fee = HEADER_SIZE;
+    let satoshis = 0;
+    for (let coinInfo of coinInfos) {
+      satoshis += coinInfo.satoshis;
+      fee += INPUT_SIZE;
+    }
+
+    let denoms = [];
+    let faceValue = 0;
+    let stamps = 0;
+    let excess = satoshis - fee;
+    for (let denom of DENOMS) {
+      let feeDenom = denom;
+      feeDenom = denom + minStampFee + OUTPUT_SIZE;
+      while (excess >= feeDenom) {
+        denoms.push(denom);
+        stamps += MIN_STAMPS;
+        excess -= feeDenom;
+        fee += OUTPUT_SIZE;
+        faceValue += denom;
+      }
+    }
+
+    if (denoms.length === 0) {
+      let err = new Error(
+        `cannot create a spendable coin from '${satoshis}' sats across ${coinInfos.length} coins (dust)`,
+      );
+      //@ts-ignore
+      err.code = "E_FORCE_DUST";
+      throw err;
+    }
+
+    let dust = excess % STAMP;
+    let extraStamps = excess / STAMP;
+    extraStamps = Math.floor(extraStamps);
+    stamps += extraStamps;
+
+    let stampsPerCoin = stamps / denoms.length;
+    stampsPerCoin = Math.floor(stampsPerCoin);
+
+    // adjusting for the normal calculation that uses fees to calculate stamps
+    let stampDust = fee + dust;
+    let dustStamps = stampDust / STAMP;
+    dustStamps = Math.floor(dustStamps);
+    stamps += dustStamps;
+    dust = stampDust % STAMP;
+
+    let coinInfo = {
+      satoshis,
+      faceValue,
+      stamps,
+      dust,
+    };
+
+    let transactable = true;
+    let stampsNeeded = 0;
+    let denomInfo = Object.assign(coinInfo, {
+      denoms,
+      stampsPerCoin,
+      fee,
+      transactable,
+      stampsNeeded,
+    });
 
     return denomInfo;
   };
