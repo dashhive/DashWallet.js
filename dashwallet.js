@@ -2044,9 +2044,14 @@
    * @param {Array<Number>} DENOMS
    * @param {Number} STAMP
    * @param {Array<CoinInfo>} coinInfos
+   * @param {Boolean} force - make change to create stamps if necessary
    * @return {DenomInfo}
    */
-  Wallet._denominateCoins = function (DENOMS, STAMP, coinInfos) {
+  Wallet._denominateCoins = function (DENOMS, STAMP, coinInfos, force = false) {
+    if (force) {
+      return Wallet._denominateSelfPayCoins(DENOMS, STAMP, coinInfos);
+    }
+
     let denoms = [];
 
     let satoshis = 0;
