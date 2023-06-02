@@ -24,6 +24,7 @@
   */
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
+  /** @typedef {import('dashtx').TxOutput} TxOutput */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
   /** @typedef {import('dashsight').GetUtxos} GetUtxos */
   /** @typedef {import('dashsight').InstantSend} InstantSend */
@@ -416,7 +417,7 @@
         throw new Error(`no 'handle' given`);
       }
 
-      let specials = ["main", "wifs"];
+      let specials = ["main", "savings", "wifs"];
       let ihandle = handle.toLowerCase();
       let isSpecial = specials.includes(ihandle);
       if (isSpecial) {
@@ -942,7 +943,6 @@
         let addrsInfo = { index: -1, addresses: [handle] };
         return addrsInfo;
       }
-      console.log("wallets.length", wallets.length);
 
       let limit = count;
       let addrsInfo = await wallet._getNextLooseAddrs({
@@ -1061,8 +1061,7 @@
       let online = true;
       if (online) {
         for (let addr of addrs) {
-          let addrInfo = safe.cache.addresses[addr];
-          //let addrInfo = await wallet._updateAddrInfo(addr, now, staletime);
+          let addrInfo = await wallet._updateAddrInfo(addr, now, staletime);
           let used = isUsed(addrInfo);
           if (!used) {
             available.push(addr);
@@ -1211,74 +1210,9 @@
       staletime = config.staletime,
       breakChange = false,
     }) {
-      // TODO XXXX
-
-      // Mechanisms
-      // - Cash-like transfer of coins
-      // - Send face value to multiple (or single no-change)
-      // - Send exact-ish amount to multiple (or single, no-change)
-
-      let utxos = selectedCoins;
-
-      let fullTransfer = !satoshis;
-      if (fullTransfer) {
-        let selection = wallet.useAllCoins({ utxos, breakChange });
-        return selection;
-      }
-
-      let hasSelectedCoins = selectedCoins.length > 0;
-      if (!hasSelectedCoins) {
-        utxos = availableCoins;
-      }
-
-      let d = wallet;
-      let output = Wallet._parseSendInfo(d, satoshis);
-
-      let selection = wallet.useMatchingCoins({
-        output,
-        utxos,
-        breakChange,
-      });
-
-      console.log(selection);
       console.error("not implemented");
       process.exit(1);
       return;
-
-      let count = 1;
-      let addrsInfo = await wallet.getNextPayAddrs({
-        handle,
-        allowReuse,
-        count,
-        now,
-        staletime,
-      });
-      // TODO lookup addresses here(?)
-
-      // ideal based on amount
-      // hit exact target
-
-      // get the ideal number of coins
-      let tx = await wallet.createTx({
-        inputs: utxos,
-        addresses: addrsInfo.addresses,
-        satoshis: satoshis,
-      });
-
-      let result = await dashsight.instantSend(tx.transaction).catch(
-        /** @param {Error} err */
-        function (err) {
-          //@ts-ignore
-          err.failedTx = tx.transaction;
-          //@ts-ignore
-          err.failedUtxos = tx.inputs;
-          throw err;
-        },
-      );
-      //@ts-ignore TODO type summary
-      await wallet.captureTx({ summary: tx, now });
-
-      return Object.assign({ response: result }, tx);
     };
 
     /**
@@ -1531,8 +1465,6 @@
       dust += sixFees;
       let cost = dust;
 
-      console.log(newCoins);
-
       let fees = DashTx.appraise({ inputs: inputs, outputs: outputs });
       let feeStr = toDustFixed(fees.mid);
 
@@ -1598,10 +1530,9 @@
         );
       }
 
-      // TODO use knuthShuffle or explicit crypto random
       let payAddresses = addrsInfo.addresses.slice(0);
-      fauxTxos.sort(Math.random);
-      outputs.sort(Math.random);
+      fauxTxos.sort(sortByTxAddrSats);
+      outputs.sort(sortByTxAddrSats);
       for (let output of outputs) {
         output = Object.assign(output, {
           address: payAddresses.pop(),
@@ -1968,6 +1899,31 @@
         let recipAddrInfo = safe.cache.addresses[changeAddr];
         if (recipAddrInfo) {
           recipAddrInfo.sync_at = now + offset;
+        }
+      }
+
+      await config.store.save(safe.cache);
+    };
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<TxOutput>?} [opts.outputs]
+     * @param {Number} [opts.now] - ms
+     */
+    wallet.captureTx = async function ({ inputs, outputs, now = Date.now() }) {
+      if (inputs?.length) {
+        await wallet._spendUtxos({ utxos: inputs, now: now });
+      }
+
+      if (outputs?.length) {
+        for (let output of outputs) {
+          if (!output.address) {
+            // TODO guarantee address from pkh
+            continue;
+          }
+          // TODO offline update
+          await indexNonHdAddr(ADDRS_WALLET, output.address, now, 0);
         }
       }
 
@@ -2773,11 +2729,19 @@
     if (!safe.privateWallets) {
       safe.privateWallets = {};
     }
+    if (!safe.privateWallets.savings) {
+      safe.privateWallets.savings = await Wallet.generate({
+        name: "savings",
+        label: "Savings",
+        priority: 10,
+      });
+      await config.store.save(safe.privateWallets);
+    }
     if (!safe.privateWallets.wifs) {
       safe.privateWallets.wifs = await Wallet.generate({
         label: "WIFs",
         name: "wifs",
-        priority: 0,
+        priority: 50,
         wifs: [],
       });
       await config.store.save(safe.privateWallets);
@@ -2786,7 +2750,7 @@
       safe.privateWallets.main = await Wallet.generate({
         name: "main",
         label: "Main",
-        priority: 1,
+        priority: 100,
       });
       await config.store.save(safe.privateWallets);
     }
@@ -3054,7 +3018,7 @@
     // (spread the stamp values across)
     // 1. make objects for sendInfo denoms
     // 2. concat all objects
-    // 3. randomize
+    // 3. sort deterministically
     // 4. spread stamps
     // 5. dust?? fees?
     return {
@@ -3097,6 +3061,84 @@
 
     return usable;
   }
+
+  /**
+   * Sort deterministic by Tx, VOut, Addr (all Asc), and Sats (Dsc)
+   *
+   * Note: it's important that it's deterministic (or random)
+   * to maintain the cash-like quality transfer - rather than
+   * by payee and change, which leaks more information to bad actors.
+   *
+   * TODO move to DashTx
+   *
+   * @param {CoreUtxo} a
+   * @param {CoreUtxo} b
+   * @returns Number
+   */
+  Wallet.sortInputs = function (a, b) {
+    // Ascending TxID (Lexicographical)
+    if (a.txId > b.txId) {
+      return 1;
+    }
+    if (a.txId < b.txId) {
+      return -1;
+    }
+
+    // Ascending Vout (Numerical)
+    let indexDiff = a.outputIndex - b.outputIndex;
+    if (indexDiff !== 0) {
+      return indexDiff;
+    }
+
+    // Ascending Address (Lexicographical)
+    if (a.address > b.address) {
+      return 1;
+    }
+    if (a.address < b.address) {
+      return -1;
+    }
+
+    // Descending Sats (Numberical)
+    return b.satoshis - a.satoshis;
+  };
+
+  /**
+   * Sort deterministic by Addr (all Asc), and Sats (Dsc)
+   *
+   * Note: it's important that it's deterministic (or random)
+   * to maintain the cash-like quality transfer - rather than
+   * by payee and change, which leaks more information to bad actors.
+   *
+   * TODO move to DashTx
+   *
+   * @param {TxOutput} a
+   * @param {TxOutput} b
+   * @returns Number
+   */
+  Wallet.sortOutputs = function (a, b) {
+    if (a.pubKeyHash && b.pubKeyHash) {
+      // Ascending PKH (Lexicographical)
+      if (a.pubKeyHash > b.pubKeyHash) {
+        return 1;
+      }
+      if (a.pubKeyHash < b.pubKeyHash) {
+        return -1;
+      }
+    }
+
+    if (a.address && b.address) {
+      // Ascending Address (Lexicographical)
+      if (a.address > b.address) {
+        return 1;
+      }
+      if (a.address < b.address) {
+        return -1;
+      }
+    }
+
+    // Descending Sats (Numberical)
+    return b.satoshis - a.satoshis;
+  };
 
   /**
    * Sort DenomInfos first by lowest face value first
