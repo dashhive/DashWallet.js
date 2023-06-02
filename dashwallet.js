@@ -920,9 +920,15 @@
 
       if (isAddrLen) {
         if (count !== 1) {
-          throw new Error(
+          let err = new Error(
             `can't get ${count} addresses from single address for '${handle}'`,
           );
+          Object.assign(err, {
+            code: "E_TOO_FEW_ADDRESSES",
+            need: count,
+            lastAddress: [handle],
+          });
+          throw err;
         }
 
         let addrInfo = await indexPayAddr(
@@ -936,7 +942,7 @@
 
         if (addrInfo.txs.length) {
           if (!allowReuse) {
-            throw createReuseError();
+            throw createReuseError(addrInfo.address);
           }
         }
 
@@ -958,30 +964,16 @@
         let err = new Error(
           `there is no xpub, and only ${lossyCount} (need ${count}) lossy addresses associated with '${handle}'`,
         );
-        //@ts-ignore
-        err.code = "E_NO_PAY_ADDR";
+        Object.assign(err, {
+          code: "E_TOO_FEW_ADDRESSES",
+          need: count,
+          lastAddress: addrsInfo?.addresses?.at(-1),
+        });
         throw err;
       }
 
       return addrsInfo;
     };
-
-    /**
-     * @param {Object} opts
-     * @param {String} [opts.walletName]
-     * @param {String} opts.xpub
-     * @param {Number} opts.count
-     * @param {Number} [opts.now]
-     * @param {Number} [opts.staletime]
-     * @param {Boolean} [opts.allowReuse]
-     */
-    wallet._getNextXPubPayAddrs = async function ({
-      xpub,
-      count = 1,
-      now = Date.now(),
-      staletime = config.staletime,
-      allowReuse = false,
-    }) {};
 
     /**
      * @param {Object} opts
@@ -1059,8 +1051,10 @@
       // check if they have been used, just recently
       let available = [];
       let online = true;
+      let lastAddr;
       if (online) {
         for (let addr of addrs) {
+          lastAddr = addr;
           let addrInfo = await wallet._updateAddrInfo(addr, now, staletime);
           let used = isUsed(addrInfo);
           if (!used) {
@@ -1071,7 +1065,7 @@
 
       if (!available.length) {
         if (!allowReuse) {
-          throw createReuseError();
+          throw createReuseError(lastAddr);
         }
         available.push(payWallet.addr);
       }
@@ -1086,12 +1080,16 @@
       return addrInfo.txs?.length > 0;
     }
 
-    function createReuseError() {
+    /**
+     * @param {String} address
+     */
+    function createReuseError(lastAddress) {
       let err = new Error(
         `no unused addresses are available (set 'allowReuse' to use the most recent)`,
       );
       //@ts-ignore
       err.code = `E_NO_UNUSED_ADDR`;
+      err.lastAddress = lastAddress;
 
       return err;
     }
@@ -1531,13 +1529,13 @@
       }
 
       let payAddresses = addrsInfo.addresses.slice(0);
-      fauxTxos.sort(sortByTxAddrSats);
-      outputs.sort(sortByTxAddrSats);
+      fauxTxos.sort(Wallet.sortInputs);
       for (let output of outputs) {
         output = Object.assign(output, {
           address: payAddresses.pop(),
         });
       }
+      outputs.sort(Wallet.sortOutputs);
 
       for (let output of outputs) {
         //@ts-ignore TODO bad export
