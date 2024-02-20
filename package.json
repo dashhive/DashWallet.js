@@ -15,9 +15,9 @@
     "lint": "npm run tsc && npm run jshint",
     "--------------": "-----------------------------------------",
     "jshint": "npx -p jshint@2.x -- jshint -c ./.jshintrc./*.js",
-    "prettier": "npx -p prettier@2.x -- prettier -w '**/*.{js,md}'",
+    "prettier": "npx -p prettier@3.x -- prettier -w '**/*.{js,md}'",
     "reexport-types": "npx -p jswt@1.x -- reexport",
-    "tsc": "npx -p typescript@4.x -- tsc -p ./jsconfig.json",
+    "tsc": "npx -p typescript@5.x -- tsc -p ./jsconfig.json",
     "-------------": "------------------------------------------",
     "prepublish": "npm run reexport-types",
     "test": "echo \"Error: no test specified\" && exit 1"
