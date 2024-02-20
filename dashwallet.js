@@ -1208,9 +1208,9 @@
       staletime = config.staletime,
       breakChange = false,
     }) {
-      console.error("not implemented");
-      process.exit(1);
-      return;
+      let msg = "not implemented";
+      let err = new Error(msg);
+      throw err;
     };
 
     /**
