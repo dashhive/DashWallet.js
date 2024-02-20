@@ -39,9 +39,9 @@
   },
   "homepage": "https://github.com/dashhive/dashwallet.js#readme",
   "dependencies": {
-    "dashhd": "^3.0.5",
-    "dashphrase": "^1.3.9",
-    "dashsight": "^1.6.0",
-    "dashtx": "^0.9.0"
+    "dashhd": "^3.3.0",
+    "dashphrase": "^1.4.0",
+    "dashsight": "^1.6.1",
+    "dashtx": "^0.13.2"
   }
 }
