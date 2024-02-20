@@ -2450,8 +2450,7 @@
         }
 
         await config.store.save(safe.privateWallets);
-      },
-      Promise.resolve());
+      }, Promise.resolve());
 
       await config.store.save(safe.cache);
     };
