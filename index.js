@@ -7,6 +7,11 @@ module.exports = require("./lib/dashwallet.js")
 // these typedef reexports will be available to dependent packages
 /**
  * @typedef {import('./dashwallet.js').MiniUtxo} MiniUtxo
+ * @typedef {import('./dashwallet.js').CoinInfo} CoinInfo
+ * @typedef {import('./dashwallet.js').DenomInfo} DenomInfo
+ * @typedef {import('./dashwallet.js').DenomInfoPartial} DenomInfoPartial
+ * @typedef {import('./dashwallet.js').UtxoCoinInfo} UtxoCoinInfo
+ * @typedef {import('./dashwallet.js').SendInfo} SendInfo
  * @typedef {import('./dashwallet.js').WalletAddress} WalletAddress
  * @typedef {import('./dashwallet.js').WalletWifPartial} WalletWifPartial
  * @typedef {import('./dashwallet.js').WalletWif} WalletWif
@@ -15,7 +20,7 @@ module.exports = require("./lib/dashwallet.js")
  * @typedef {import('./dashwallet.js').Store} Store
  * @typedef {import('./dashwallet.js').WalletInstance} WalletInstance
  * @typedef {import('./dashwallet.js').SyncOpts} SyncOpts
- * @typedef {import('./dashwallet.js').BefriendOpts} BefriendOpts
+ * @typedef {import('./dashwallet.js').ContactOpts} ContactOpts
  * @typedef {import('./dashwallet.js').FindFriendOpts} FindFriendOpts
  * @typedef {import('./dashwallet.js').Safe} Safe
  * @typedef {import('./dashwallet.js').Preferences} Preferences
@@ -23,5 +28,8 @@ module.exports = require("./lib/dashwallet.js")
  * @typedef {import('./dashwallet.js').PrivateWallet} PrivateWallet
  * @typedef {import('./dashwallet.js').WifInfo} WifInfo
  * @typedef {import('./dashwallet.js').PayWallet} PayWallet
+ * @typedef {import('./dashwallet.js').WalletAccount} WalletAccount
  * @typedef {import('./dashwallet.js').NextInfo} NextInfo
+ * @typedef {import('./dashwallet.js').CoinSelection} CoinSelection
+ * @typedef {import('./dashwallet.js').DenomConfig} DenomConfig
  */
