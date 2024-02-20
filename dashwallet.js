@@ -6,9 +6,12 @@
   exports.Wallet = Wallet;
 
   let DashApi = {};
-  let DashHd = require("dashhd");
-  let DashKeys = require("dashkeys");
-  let DashPhrase = require("dashphrase");
+  //@ts-ignore
+  let DashHd = exports.DashHd || require("dashhd");
+  //@ts-ignore
+  let DashKeys = exports.DashKeys || require("dashkeys");
+  //@ts-ignore
+  let DashPhrase = exports.DashPhrase || require("dashphrase");
   //@ts-ignore
   let DashTx = exports.DashTx || require("dashtx");
   let dashTx = DashTx.create();
