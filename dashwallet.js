@@ -1383,20 +1383,13 @@
 
     /**
      * @param {Object} opts
-     * @param {Array<CoreUtxo>?} [opts.inputs]
-     * @param {Array<String>} [opts.addresses]
-     * @param {Number} [opts.satoshis]
-     * x@param {Array<import('dashtx').TxOutput>} opts.outputs
+     * @param {Array<CoreUtxo>?} [opts.inputs] - the coins to denominate, instead of a satoshis target,
+     * @param {Number} [opts.satoshis] - instead of inputs, for a target amount
+     * TODO@param {Array<import('dashtx').TxOutput>} opts.outputs
      * @param {Number} [opts.now] - ms
      * @param {Number} [opts.staletime]
      */
-    wallet.denominate = async function ({
-      inputs,
-      addresses,
-      satoshis,
-      now,
-      staletime,
-    }) {
+    wallet.denominate = async function ({ inputs, satoshis, now, staletime }) {
       // TODO try first to hit the target output values
       inputs = mustSelectInputs({
         inputs: inputs,
