@@ -27,11 +27,39 @@
   */
 
   /** @typedef {import('dashsight').CoreUtxo} CoreUtxo */
+  /** @typedef {import('dashtx').TxInfo} TxInfoRaw */
+  /** @typedef {import('dashtx').TxInfoSigned} TxInfoSigned */
   /** @typedef {import('dashtx').TxOutput} TxOutput */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
   /** @typedef {import('dashsight').GetUtxos} GetUtxos */
   /** @typedef {import('dashsight').InstantSend} InstantSend */
   /** @typedef {import('dashsight').InsightUtxo} InsightUtxo */
+
+  /** @typedef {TxInfoRaw & TxDraftPartial} TxDraft */
+  /**
+   * @typedef TxDraftPartial
+   * @prop {TxOutput} change
+   * @prop {Number} feeEstimate
+   * @prop {Boolean} fullTransfer
+   */
+
+  /** @typedef {TxInfoSigned & TxSummaryPartial} TxSummary */
+  /**
+   * @typedef TxSummaryPartial
+   * @prop {Number} total - sum of all inputs
+   * @prop {Number} sent - sum of all outputs
+   * @prop {Number} fee - actual fee
+   * @prop {Array<TxOutput>} outputs
+   * @prop {Array<import('dashtx').TxInput>} inputs
+   * @prop {TxOutput} output - alias of 'recipient' for backwards-compat
+   * @prop {TxOutput} recipient - output to recipient
+   * @prop {TxOutput} change - sent back to self
+   */
+
+  /**
+   * @typedef MaybeHasAddress
+   * @prop {String} [address]
+   */
 
   const DUFFS = 100000000;
   const DUST = 10000;
@@ -1768,21 +1796,80 @@
     // XXX pass in known-good change addrs
     /**
      * @param {Object} opts
-     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<CoreUtxo>?} [opts.utxos] - ALL utxos for the wallet
+     * @param {Array<CoreUtxo>?} [opts.inputs] - selected utxos for this transaction
      * @param {import('dashtx').TxOutput} opts.output
      * @param {Number} [opts.now] - ms
      */
     wallet.createDirtyTx = async function ({
+      utxos,
       inputs,
       output,
       now = Date.now(),
     }) {
+      if (!utxos?.length) {
+        utxos = wallet.utxos();
+      }
+
+      let txDraft = wallet.legacy.draftTx({ utxos, inputs, output });
+
+      if (txDraft.change) {
+        let count = 1;
+        let handle = "main";
+        let account = 0; // main
+        let usage = 1;
+
+        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
+        let xKey = await wallet._recoverXPrv({ handle, hdpath });
+
+        // TODO should be name, not handle (though they're the same for main)
+        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
+        await config.store.save(safe.cache);
+
+        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
+
+        txDraft.change.address = addrs[0];
+      }
+
+      for (let output of txDraft.outputs) {
+        //@ts-ignore TODO bad export
+        let pkh = await DashKeys.addrToPkh(output.address);
+        //@ts-ignore TODO bad export
+        let pkhHex = DashKeys.utils.bytesToHex(pkh);
+        Object.assign(output, { pubKeyHash: pkhHex });
+      }
+
+      let keys = await wallet._utxosToPrivKeys(txDraft.inputs);
+
+      let txSummary = await Wallet.legacy.finalizeAndSignTx(txDraft, keys);
+
+      await wallet._authDirtyTx({ summary: txSummary, now: now });
+
+      return txSummary;
+    };
+
+    wallet.legacy = {};
+
+    /**
+     * @param {Object} opts
+     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<CoreUtxo>?} [opts.utxos]
+     * @param {import('dashtx').TxOutput} opts.output
+     * @returns {TxDraft}
+     */
+    wallet.legacy.draftTx = function ({ utxos, inputs, output }) {
+      let fullTransfer = false;
+
       if (!inputs) {
-        let utxos = wallet.utxos();
+        if (!utxos) {
+          utxos = wallet.utxos();
+        }
         inputs = Wallet._mustSelectInputs({
           utxos: utxos,
           satoshis: output.satoshis,
         });
+      } else {
+        fullTransfer = !output.satoshis;
       }
 
       let totalAvailable = DashApi.getBalance(inputs);
@@ -1807,21 +1894,6 @@
       let hasChange = change.satoshis > DashApi.DUST;
 
       if (hasChange) {
-        let count = 1;
-        let handle = "main";
-        let account = 0; // main
-        let usage = 1;
-
-        let hdpath = `m/44'/${COIN_TYPE}'/${account}'/${usage}`;
-        let xKey = await wallet._recoverXPrv({ handle, hdpath });
-
-        // TODO should be name, not handle (though they're the same for main)
-        let offset = await indexPayAddrs(handle, xKey, hdpath, now);
-        await config.store.save(safe.cache);
-
-        let addrs = await wallet._nextWalletAddrs({ xKey, offset, count });
-
-        change.address = addrs[0];
         outputs.push(change);
         feeEstimate += DashTx.OUTPUT_SIZE;
       } else {
@@ -1829,54 +1901,45 @@
         feeEstimate = totalAvailable + -recip.satoshis;
       }
 
-      for (let output of outputs) {
-        //@ts-ignore TODO bad export
-        let pkh = await DashKeys.addrToPkh(output.address);
-        //@ts-ignore TODO bad export
-        let pkhHex = DashKeys.utils.bytesToHex(pkh);
-        Object.assign(output, { pubKeyHash: pkhHex });
-      }
-
       let txInfoRaw = {
-        inputs: inputs,
-        outputs: outputs,
+        inputs,
+        outputs,
+        change,
+        feeEstimate,
+        fullTransfer,
       };
-      let keys = await wallet._utxosToPrivKeys(inputs);
 
+      return txInfoRaw;
+    };
+
+    /**
+     * @param {TxDraft} txDraft
+     * @param {Array<Uint8Array>} keys
+     * @returns {Promise<TxSummary>}
+     */
+    wallet.legacy.finalizeAndSignTx = async function (txDraft, keys) {
       /** @type {import('dashtx').TxInfoSigned} */
-      let txInfo = await _signToTarget(txInfoRaw, feeEstimate, keys).catch(
-        async function (e) {
-          //@ts-ignore
-          if ("E_NO_ENTROPY" !== e.code) {
-            throw e;
-          }
-          let txInfo = await _signFeeWalk(
-            txInfoRaw,
-            output,
-            feeEstimate,
-            change,
-            keys,
-          );
-          return txInfo;
-        },
-      );
+      let txSigned = await _signToTarget(
+        txDraft,
+        txDraft.feeEstimate,
+        keys,
+      ).catch(async function (e) {
+        //@ts-ignore
+        if ("E_NO_ENTROPY" !== e.code) {
+          throw e;
+        }
 
-      let summary = summarizeDirtyTx(txInfo);
-      //@ts-ignore TODO type summary
-      await wallet._authDirtyTx({ summary, now });
-      return summary;
+        let _txSigned = await _signFeeWalk(txDraft, keys);
+        return _txSigned;
+      });
+
+      let txSummary = _summarizeLegacyTx(txSigned);
+      return txSummary;
     };
 
     /**
      * @param {Object} opts
-     * @param {Object} opts.summary
-     * @param {Object} opts.summary.output
-     * @param {String} [opts.summary.output.address]
-     * @param {Number} [opts.summary.output.satoshis]
-     * @param {Object} [opts.summary.change]
-     * @param {String} [opts.summary.change.address]
-     * @param {Number} [opts.summary.change.satoshis]
-     * @param {Array<CoreUtxo>?} [opts.summary.inputs]
+     * @param {TxSummary} opts.summary
      * @param {Number} [opts.now] - ms
      */
     wallet._authDirtyTx = async function ({ summary, now = Date.now() }) {
@@ -1987,9 +2050,10 @@
     }
 
     /**
-     * @param {import('dashtx').TxInfoSigned} txInfo
+     * @param {TxInfoSigned} txInfo
+     * @returns {TxSummary}
      */
-    function summarizeDirtyTx(txInfo) {
+    function _summarizeLegacyTx(txInfo) {
       let totalAvailable = 0;
       for (let coin of txInfo.inputs) {
         //@ts-ignore - our inputs are mixed with CoreUtxo
@@ -2012,14 +2076,15 @@
       }
       fee -= changeSats;
 
-      let summary = Object.assign(txInfo, {
+      let summaryPartial = {
         total: totalAvailable,
         sent: sent,
         fee: fee,
         output: recipient,
         recipient: recipient,
         change: change,
-      });
+      };
+      let summary = Object.assign({}, txInfo, summaryPartial);
 
       return summary;
     }
@@ -2063,25 +2128,22 @@
     }
 
     /**
-     * @param {import('dashtx').TxInfo} txInfoRaw
-     * @param {Object} output
-     * @param {Number} [output.satoshis]
-     * @param {Number} feeEstimate
-     * @param {Object} change
-     * @param {Number} change.satoshis
+     * Strategy for signing transactions when a non-entropy signing method is used -
+     * exhaustively walk each possible signature until one that works is found.
+     * @param {TxDraft} txDraft
      * @param {Array<Uint8Array>} keys
+     * @returns {Promise<TxInfoSigned>}
      */
-    async function _signFeeWalk(txInfoRaw, output, feeEstimate, change, keys) {
-      let fees = DashTx.appraise(txInfoRaw);
-      let limit = fees.max - feeEstimate;
+    async function _signFeeWalk(txDraft, keys) {
+      let fees = DashTx.appraise(txDraft);
+      let limit = fees.max - txDraft.feeEstimate;
 
-      /** @type {import('dashtx').TxInfoSigned} */
-      let txInfo;
+      /** @type TxInfoSigned */
+      let txSigned;
 
       for (let n = 0; true; n += 1) {
-        let isTransfer = !output.satoshis;
-        let hasExtra = change.satoshis > 0;
-        let canIncreaseFee = isTransfer || hasExtra;
+        let hasChange = txDraft.change?.satoshis > 0;
+        let canIncreaseFee = txDraft.fullTransfer || hasChange;
         if (!canIncreaseFee) {
           // TODO try to add another utxo before failing
           throw new Error(
@@ -2090,30 +2152,26 @@
         }
 
         let outIndex = 0;
-        if (hasExtra) {
-          outIndex = txInfoRaw.outputs.length - 1;
-          change.satoshis -= 1;
+        if (hasChange) {
+          outIndex = txDraft.outputs.length - 1;
         }
-        txInfoRaw.outputs[outIndex].satoshis -= 1;
+        txDraft.outputs[outIndex].satoshis -= 1;
 
-        txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
+        txSigned = await dashTx.hashAndSignAll(txDraft, keys);
 
-        //console.log("DEBUG txInfoRaw (walk fee):");
-        //console.log(txInfoRaw);
-
-        let fee = txInfo.transaction.length / 2;
-        if (fee <= feeEstimate) {
+        let fee = txSigned.transaction.length / 2;
+        if (fee <= txDraft.feeEstimate) {
           break;
         }
 
         if (n >= limit) {
           throw new Error(
-            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${feeEstimate}`,
+            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${txDraft.feeEstimate}`,
           );
         }
       }
 
-      return txInfo;
+      return txSigned;
     }
 
     // TODO nix
@@ -2150,7 +2208,7 @@
     };
 
     /**
-     * @param {Array<CoreUtxo>} utxos
+     * @param {Array<MaybeHasAddress>} utxos
      * @returns {Promise<Array<Uint8Array>>} - wifs
      */
     wallet._utxosToPrivKeys = async function (utxos) {
@@ -2161,6 +2219,11 @@
 
       await utxos.reduce(async function (promise, utxo) {
         await promise;
+
+        if (!utxo.address) {
+          let msg = `'address' must be assigned before attempting to retrieve private key`;
+          throw new Error(msg);
+        }
 
         let wifInfo = await wallet.findWif({
           address: utxo.address,
