@@ -1410,11 +1410,14 @@
       staletime,
     }) {
       // TODO try first to hit the target output values
-      inputs = mustSelectInputs({
-        inputs: inputs,
-        satoshis: satoshis,
-        now: now,
-      });
+      if (!inputs) {
+        let utxos = wallet.utxos();
+        inputs = mustSelectInputs({
+          utxos: utxos,
+          satoshis: satoshis,
+        });
+      }
+
       let fauxTxos = inputs;
       //let fauxTxos = await inputListToFauxTxos(wallet, inputList);
       let balance = Wallet.getBalance(fauxTxos);
@@ -1678,7 +1681,13 @@
       forceDonation = -1,
       now = Date.now(),
     }) {
-      inputs = mustSelectInputs({ inputs, satoshis, now });
+      if (!inputs) {
+        let utxos = wallet.utxos();
+        inputs = mustSelectInputs({
+          utxos: utxos,
+          satoshis: satoshis,
+        });
+      }
 
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [] });
@@ -1768,11 +1777,13 @@
       output,
       now = Date.now(),
     }) {
-      inputs = mustSelectInputs({
-        inputs: inputs,
-        satoshis: output.satoshis,
-        now: now,
-      });
+      if (!inputs) {
+        let utxos = wallet.utxos();
+        inputs = mustSelectInputs({
+          utxos: utxos,
+          satoshis: output.satoshis,
+        });
+      }
 
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [output] });
@@ -1858,30 +1869,24 @@
 
     /**
      * @param {Object} opts
-     * @param {Array<CoreUtxo>?} [opts.inputs]
+     * @param {Array<CoreUtxo>} opts.utxos
      * @param {Number} [opts.satoshis]
      * @param {Number} [opts.now] - ms
      */
-    function mustSelectInputs({ inputs, satoshis, now = Date.now() }) {
-      if (inputs) {
-        return inputs;
-      }
-
-      let fullTransfer = !satoshis;
-      if (fullTransfer) {
-        let msg = `'satoshis' must be a positive number unless 'inputs' are specified`;
+    function mustSelectInputs({ utxos, satoshis }) {
+      if (!satoshis) {
+        let msg = `expected target selection value 'satoshis' to be a positive integer but got '${satoshis}'`;
         let err = new Error(msg);
         throw err;
       }
 
-      let coins = wallet.utxos();
-      inputs = DashApi.selectOptimalUtxos(coins, satoshis);
+      let selected = DashApi.selectOptimalUtxos(utxos, satoshis);
 
-      if (!inputs.length) {
-        throw Wallet._createInsufficientFundsError(coins, satoshis);
+      if (!selected.length) {
+        throw Wallet._createInsufficientFundsError(utxos, satoshis);
       }
 
-      return inputs;
+      return selected;
     }
 
     /**
