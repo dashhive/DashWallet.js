@@ -1907,19 +1907,17 @@
      */
     wallet.legacy.finalizeAndSignTx = async function (txDraft, keys) {
       /** @type {import('dashtx').TxInfoSigned} */
-      let txSigned = await _signToTarget(
-        txDraft,
-        txDraft.feeEstimate,
-        keys,
-      ).catch(async function (e) {
-        //@ts-ignore
-        if ("E_NO_ENTROPY" !== e.code) {
-          throw e;
-        }
+      let txSigned = await _signToTarget(txDraft, keys).catch(
+        async function (e) {
+          //@ts-ignore
+          if ("E_NO_ENTROPY" !== e.code) {
+            throw e;
+          }
 
-        let _txSigned = await _signFeeWalk(txDraft, keys);
-        return _txSigned;
-      });
+          let _txSigned = await _signFeeWalk(txDraft, keys);
+          return _txSigned;
+        },
+      );
 
       let txSummary = _summarizeLegacyTx(txSigned);
       return txSummary;
@@ -2078,41 +2076,39 @@
     }
 
     /**
-     * @param {import('dashtx').TxInfo} txInfoRaw
-     * @param {Number} feeEstimate
+     * @param {TxDraft} txDraft
      * @param {Array<Uint8Array>} keys
+     * @returns {Promise<TxInfoSigned>}
      */
-    async function _signToTarget(txInfoRaw, feeEstimate, keys) {
+    async function _signToTarget(txDraft, keys) {
       let limit = 128;
       let lastTx = "";
       let hasEntropy = true;
 
       /** @type {import('dashtx').TxInfoSigned} */
-      let txInfo;
+      let txSigned;
 
       for (let n = 0; true; n += 1) {
-        txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
-        //console.log("DEBUG txInfoRaw (entropy):");
-        //console.log(txInfoRaw);
+        txSigned = await dashTx.hashAndSignAll(txDraft, keys);
 
-        lastTx = txInfo.transaction;
-        let fee = txInfo.transaction.length / 2;
-        if (fee <= feeEstimate) {
+        lastTx = txSigned.transaction;
+        let fee = txSigned.transaction.length / 2;
+        if (fee <= txDraft.feeEstimate) {
           break;
         }
 
-        if (txInfo.transaction === lastTx) {
+        if (txSigned.transaction === lastTx) {
           hasEntropy = false;
           break;
         }
         if (n >= limit) {
           throw new Error(
-            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${feeEstimate}`,
+            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${txDraft.feeEstimate}`,
           );
         }
       }
 
-      return txInfo;
+      return txSigned;
     }
 
     /**
