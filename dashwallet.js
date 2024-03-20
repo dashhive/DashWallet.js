@@ -1412,7 +1412,7 @@
       // TODO try first to hit the target output values
       if (!inputs) {
         let utxos = wallet.utxos();
-        inputs = mustSelectInputs({
+        inputs = Wallet._mustSelectInputs({
           utxos: utxos,
           satoshis: satoshis,
         });
@@ -1683,7 +1683,7 @@
     }) {
       if (!inputs) {
         let utxos = wallet.utxos();
-        inputs = mustSelectInputs({
+        inputs = Wallet._mustSelectInputs({
           utxos: utxos,
           satoshis: satoshis,
         });
@@ -1779,7 +1779,7 @@
     }) {
       if (!inputs) {
         let utxos = wallet.utxos();
-        inputs = mustSelectInputs({
+        inputs = Wallet._mustSelectInputs({
           utxos: utxos,
           satoshis: output.satoshis,
         });
@@ -1866,28 +1866,6 @@
       await wallet._authDirtyTx({ summary, now });
       return summary;
     };
-
-    /**
-     * @param {Object} opts
-     * @param {Array<CoreUtxo>} opts.utxos
-     * @param {Number} [opts.satoshis]
-     * @param {Number} [opts.now] - ms
-     */
-    function mustSelectInputs({ utxos, satoshis }) {
-      if (!satoshis) {
-        let msg = `expected target selection value 'satoshis' to be a positive integer but got '${satoshis}'`;
-        let err = new Error(msg);
-        throw err;
-      }
-
-      let selected = DashApi.selectOptimalUtxos(utxos, satoshis);
-
-      if (!selected.length) {
-        throw Wallet._createInsufficientFundsError(utxos, satoshis);
-      }
-
-      return selected;
-    }
 
     /**
      * @param {Object} opts
@@ -2771,6 +2749,28 @@
       `insufficient funds: cannot pay ${dashAmount} (+${feeAmount} fee) with ${dashBalance}`,
     );
     throw err;
+  };
+
+  /**
+   * @param {Object} opts
+   * @param {Array<CoreUtxo>} opts.utxos
+   * @param {Number} [opts.satoshis]
+   * @param {Number} [opts.now] - ms
+   */
+  Wallet._mustSelectInputs = function ({ utxos, satoshis }) {
+    if (!satoshis) {
+      let msg = `expected target selection value 'satoshis' to be a positive integer but got '${satoshis}'`;
+      let err = new Error(msg);
+      throw err;
+    }
+
+    let selected = DashApi.selectOptimalUtxos(utxos, satoshis);
+
+    if (!selected.length) {
+      throw Wallet._createInsufficientFundsError(utxos, satoshis);
+    }
+
+    return selected;
   };
 
   /**
