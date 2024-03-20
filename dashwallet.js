@@ -1868,7 +1868,7 @@
       inputs = DashApi.selectOptimalUtxos(coins, satoshis);
 
       if (!inputs.length) {
-        throw createInsufficientFundsError(coins, satoshis);
+        throw Wallet._createInsufficientFundsError(coins, satoshis);
       }
 
       return inputs;
@@ -2029,26 +2029,6 @@
       });
 
       return summary;
-    }
-
-    /**
-     * @param {Array<CoreUtxo>} allInputs
-     * @param {Number} satoshis
-     */
-    function createInsufficientFundsError(allInputs, satoshis) {
-      let totalBalance = DashApi.getBalance(allInputs);
-      let dashBalance = DashApi.toDash(totalBalance);
-      let dashAmount = DashApi.toDash(satoshis);
-      let fees = DashTx.appraise({
-        inputs: allInputs,
-        outputs: [{}],
-      });
-      let feeAmount = DashApi.toDash(fees.mid);
-
-      let err = new Error(
-        `insufficient funds: cannot pay ${dashAmount} (+${feeAmount} fee) with ${dashBalance}`,
-      );
-      throw err;
     }
 
     /**
@@ -2756,6 +2736,26 @@
     }
 
     return wallet;
+  };
+
+  /**
+   * @param {Array<CoreUtxo>} allInputs
+   * @param {Number} satoshis
+   */
+  Wallet._createInsufficientFundsError = function (allInputs, satoshis) {
+    let totalBalance = DashApi.getBalance(allInputs);
+    let dashBalance = DashApi.toDash(totalBalance);
+    let dashAmount = DashApi.toDash(satoshis);
+    let fees = DashTx.appraise({
+      inputs: allInputs,
+      outputs: [{}],
+    });
+    let feeAmount = DashApi.toDash(fees.mid);
+
+    let err = new Error(
+      `insufficient funds: cannot pay ${dashAmount} (+${feeAmount} fee) with ${dashBalance}`,
+    );
+    throw err;
   };
 
   /**
