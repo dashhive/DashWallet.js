@@ -30,6 +30,7 @@
   /** @typedef {import('dashtx').TxInfo} TxInfoRaw */
   /** @typedef {import('dashtx').TxInfoSigned} TxInfoSigned */
   /** @typedef {import('dashtx').TxOutput} TxOutput */
+  /** @typedef {import('dashtx').TxFees} TxFees */
   /** @typedef {import('dashsight').GetTxs} GetTxs */
   /** @typedef {import('dashsight').GetUtxos} GetUtxos */
   /** @typedef {import('dashsight').InstantSend} InstantSend */
@@ -1844,10 +1845,16 @@
      * @param {Object} opts
      * @param {Array<CoreUtxo>?} [opts.inputs]
      * @param {Array<CoreUtxo>?} [opts.utxos]
-     * @param {import('dashtx').TxOutput} opts.output
+     * @param {TxOutput} opts.output
+     * @param {keyof TxFees} [opts.feeSize]
      * @returns {Promise<TxDraft>}
      */
-    wallet.legacy.draftTx = async function ({ utxos, inputs, output }) {
+    wallet.legacy.draftTx = async function ({
+      utxos,
+      inputs,
+      output,
+      feeSize = 'min',
+    }) {
       let fullTransfer = false;
 
       if (!inputs) {
@@ -1863,7 +1870,7 @@
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [output] });
 
-      let feeEstimate = fees.min;
+      let feeEstimate = fees[feeSize];
       let minimumIsUnlikely = inputs.length > 2;
       if (minimumIsUnlikely) {
         let likelyPadByteSize = 2 * inputs.length;
