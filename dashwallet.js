@@ -1875,10 +1875,20 @@
       let totalAvailable = DashApi.getBalance(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [output] });
 
+      //let EXTRA_SIG_BYTES_PER_INPUT = 2;
+      let CHANCE_INPUT_SIGS_HAVE_NO_EXTRA_BYTES = 1 / 4;
+      let MINIMUM_CHANCE_SIG_MATCHES_TARGET = 1 / 20;
+
       let feeEstimate = fees.min;
-      let minimumIsUnlikely = inputs.length > 2;
+      let chanceSignaturesMatchLowestFee = Math.pow(
+        CHANCE_INPUT_SIGS_HAVE_NO_EXTRA_BYTES,
+        inputs.length,
+      );
+      let minimumIsUnlikely =
+        chanceSignaturesMatchLowestFee < MINIMUM_CHANCE_SIG_MATCHES_TARGET;
       if (minimumIsUnlikely) {
-        let likelyPadByteSize = 2 * inputs.length;
+        //let likelyPadByteSize = EXTRA_SIG_BYTES_PER_INPUT * inputs.length;
+        let likelyPadByteSize = inputs.length;
         feeEstimate += likelyPadByteSize;
       }
 
