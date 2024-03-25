@@ -17,7 +17,7 @@ function test() {
       stamps: 0,
       stampsPerCoin: 0,
       dust: 1,
-      fee: 159,
+      fee: 9999,
       transactable: false,
       stampsNeeded: 0,
     },
