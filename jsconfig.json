@@ -101,10 +101,10 @@
     "skipLibCheck": true                                 /* Skip type checking all .d.ts files. */
   },
   "include": [
-  "*.js",
-  "bin/**/*.js",
-  "lib/**/*.js",
-  "src/**/*.js"
-],
+    "*.js",
+    "bin/**/*.js",
+    "lib/**/*.js",
+    "src/**/*.js"
+  ],
   "exclude": ["node_modules"]
 }
