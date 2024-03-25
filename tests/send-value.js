@@ -39,16 +39,9 @@ function test() {
     },
   ];
 
-  let __LAST_DENOM__ = Wallet.DENOM_SATS.length - 1;
-  let denomInfo = {
-    __DENOMS__: Wallet.DENOM_SATS,
-    __MIN_DENOM__: Wallet.DENOM_SATS[__LAST_DENOM__],
-    __STAMP__: 200,
-    __MIN_STAMPS__: 2,
-  };
-
+  let DENOM_INFO = null;
   for (let row of table) {
-    let result = Wallet._parseSendInfo(denomInfo, row.satoshis);
+    let result = Wallet._parseSendInfo(DENOM_INFO, row.satoshis);
     let unmetExpectations = [];
 
     if (result._lowFaceValue !== row._lowFaceValue) {

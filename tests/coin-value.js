@@ -2,8 +2,7 @@
 
 let Wallet = require("../dashwallet.js");
 
-let STAMP = 200;
-let MIN_DENOM = 100000;
+let DENOM_INFO = null;
 
 function test() {
   // 0.00100000
@@ -81,8 +80,9 @@ function test() {
     },
   ];
 
+  console.info(`       Sat Val:   Face, Stamps, Dust ✅`);
   for (let row of table) {
-    let result = Wallet._parseCoinInfo(MIN_DENOM, STAMP, row.satoshis);
+    let result = Wallet._parseCoinInfo(DENOM_INFO, row.satoshis);
     let unmetExpectations = [];
 
     if (result.faceValue !== row.faceValue) {
@@ -110,14 +110,15 @@ function test() {
     sats = sats.padStart(10, " ");
 
     let faceValue = row.faceValue.toString();
-    faceValue = faceValue.slice(0, 4);
-    faceValue = faceValue.padStart(4, " ");
+    faceValue = faceValue.slice(0, -5);
+    faceValue = faceValue.padStart(6, " ");
 
     let stamps = row.stamps.toString();
-    stamps = stamps.padStart(3, " ");
+    stamps = stamps.padStart(6, " ");
 
     let dust = row.dust.toString();
     dust = dust.padStart(3, "0");
+    dust = dust.padStart(4, " ");
     console.info(`  - ${sats}: ${faceValue}, ${stamps}, ${dust} ✅`);
   }
 }

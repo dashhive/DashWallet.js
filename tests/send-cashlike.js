@@ -2,9 +2,6 @@
 
 let Wallet = require("../dashwallet.js");
 
-let STAMP = 200;
-let MIN_DENOM = 100000;
-
 function test() {
   let pocketA = [
     1.29905,
@@ -24,21 +21,21 @@ function test() {
     0.00105,
   ];
 
-  let pocketB = [
-    1.29905,
-    1.12505, // => 1, 0.1, 0.02, 0.005
-    0.71105,
-    0.50005,
-    0.23405, // => 0.2, 0.02, 0.01, 0.02. 0.02
-    0.20005,
-    0.20005,
-    0.10005,
-    0.02005,
-    0.02005,
-    0.00505,
-    0.00205,
-    0.00105,
-  ];
+  // let pocketB = [
+  //   1.29905,
+  //   1.12505, // => 1, 0.1, 0.02, 0.005
+  //   0.71105,
+  //   0.50005,
+  //   0.23405, // => 0.2, 0.02, 0.01, 0.02. 0.02
+  //   0.20005,
+  //   0.20005,
+  //   0.10005,
+  //   0.02005,
+  //   0.02005,
+  //   0.00505,
+  //   0.00205,
+  //   0.00105,
+  // ];
 
   let table = [
     {
@@ -86,9 +83,15 @@ function test() {
     },
   ];
 
+  let DENOM_INFO = null;
+
+  console.info(
+    //`  - ${sats}: ${faceValue}~${highFaceValue}, ${dustNeeded} ✅`,
+    `  -    Num Sats: Face Value`,
+  );
   let sendInfos = [];
   for (let row of table) {
-    let sendInfo = Wallet._parseSendInfo(MIN_DENOM, STAMP, row.satoshis);
+    let sendInfo = Wallet._parseSendInfo(DENOM_INFO, row.satoshis);
     assertSendInfo(row, sendInfo);
     sendInfos.push([row, sendInfo]);
   }
@@ -97,12 +100,12 @@ function test() {
   for (let coinValue of pocketA) {
     let coinSats = coinValue * Wallet.SATOSHIS;
     coinSats = Math.round(coinSats);
-    let coinInfo = Wallet._parseCoinInfo(MIN_DENOM, STAMP, coinSats);
-    let denomInfo = Wallet._denominateCoin(Wallet.DENOM_SATS, STAMP, coinInfo);
+    let coinInfo = Wallet._parseCoinInfo(DENOM_INFO, coinSats);
+    let denomInfo = Wallet._denominateCoin(DENOM_INFO, coinInfo);
     denomInfosA.push(denomInfo);
   }
-  console.log("denomInfosA:");
-  console.log(denomInfosA);
+  // console.log("[DEBUG] denomInfosA:");
+  // console.log(denomInfosA);
 
   for (let [row, sendInfo] of sendInfos) {
     if (row) {
@@ -112,9 +115,8 @@ function test() {
     let cashLikeInfo;
     let code;
     try {
-      cashLikeInfo = Wallet._cashLikeSelect(
-        MIN_DENOM,
-        STAMP,
+      cashLikeInfo = Wallet._pairInputsToOutputs(
+        DENOM_INFO,
         sendInfo,
         denomInfosA,
       );
@@ -136,7 +138,8 @@ function test() {
       continue;
     }
 
-    console.log(cashLikeInfo);
+    // console.log("[DEBUG]", cashLikeInfo);
+    // console.log("");
   }
 
   function assertSendInfo(row, result) {
@@ -164,11 +167,11 @@ function test() {
     }
 
     let sats = row.satoshis.toString();
-    sats = sats.padStart(10, " ");
+    sats = sats.padStart(11, " ");
 
     let faceValue = row.faceValue.toString();
-    faceValue = faceValue.slice(0, 4);
-    faceValue = faceValue.padStart(4, " ");
+    faceValue = faceValue.slice(0, -5);
+    faceValue = faceValue.padStart(6, " ");
 
     // let highFaceValue = row.highFaceValue.toString();
     // highFaceValue = highFaceValue.slice(0, 4);

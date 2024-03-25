@@ -2,8 +2,7 @@
 
 let Wallet = require("../dashwallet.js");
 
-let STAMP = 200;
-let MIN_DENOM = 100000;
+let DENOM_INFO = null;
 
 // TODO
 // - what's the fee to split as-is?
@@ -105,19 +104,14 @@ function test() {
   for (let row of table) {
     let coinInfos = [];
     for (let satoshis of row.coins) {
-      let coinInfo = Wallet._parseCoinInfo(MIN_DENOM, STAMP, satoshis);
+      let coinInfo = Wallet._parseCoinInfo(DENOM_INFO, satoshis);
       coinInfos.push(coinInfo);
     }
 
     let denomInfo;
     let code;
     try {
-      denomInfo = Wallet._denominateCoins(
-        Wallet.DENOM_SATS,
-        STAMP,
-        coinInfos,
-        row.force,
-      );
+      denomInfo = Wallet._denominateCoins(DENOM_INFO, coinInfos, row.force);
     } catch (e) {
       if (!e.code) {
         throw e;

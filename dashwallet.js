@@ -368,6 +368,16 @@
   Wallet.DENOM_SATS = [];
   amountsToSats(Wallet.DENOM_AMOUNTS, Wallet.DENOM_SATS);
 
+  {
+    let __LAST_DENOM__ = Wallet.DENOM_SATS.length - 1;
+    Wallet.__UNIT_TEST_DENOM_INFO__ = {
+      __DENOMS__: Wallet.DENOM_SATS,
+      __MIN_DENOM__: Wallet.DENOM_SATS[__LAST_DENOM__],
+      __STAMP__: 200,
+      __MIN_STAMPS__: 2,
+    };
+  }
+
   /**
    * @param {Array<Number>} amounts
    * @param {Array<Number>} sats
@@ -2765,6 +2775,10 @@
    * @returns {CoinInfo} - faceValue, stamps, etc
    */
   Wallet._parseCoinInfo = function (d, satoshis) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let MIN_DENOM = d.__MIN_DENOM__;
     let STAMP = d.__STAMP__;
     let mdash = satoshis / MIN_DENOM;
@@ -2804,6 +2818,10 @@
    * @returns {Array<UtxoCoinInfo>}
    */
   Wallet._parseUtxosInfo = function (d, utxos) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     /** @type {Array<UtxoCoinInfo>} */
     let utxoInfos = [];
 
@@ -2825,6 +2843,10 @@
    * @returns CoinSelection
    */
   Wallet._pairInputsToOutputs = function (d, sendInfo, denomInfos) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let MIN_STAMPS = d.__MIN_STAMPS__;
     let STAMP = d.__STAMP__;
     let DENOMS = d.__DENOMS__;
@@ -3175,6 +3197,10 @@
    * @returns {DenomSorter}
    */
   Wallet._byLeastChangeLowestValue = function (d, faceValue) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     /** @type {DenomSorter} */
     function sorter(a, b) {
       let fa = a.faceValue - faceValue;
@@ -3234,6 +3260,10 @@
    * @returns {SendInfo}
    */
   Wallet._parseSendInfo = function (d, satoshis) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let MIN_DENOM = d.__MIN_DENOM__;
     let MIN_STAMPS = d.__MIN_STAMPS__;
     let STAMP = d.__STAMP__;
@@ -3286,6 +3316,10 @@
    * @return {DenomInfo}
    */
   Wallet._denominateCoin = function (d, coinInfo, force = false) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let DENOMS = d.__DENOMS__;
     let STAMP = d.__STAMP__;
 
@@ -3344,6 +3378,10 @@
    * @return {DenomInfo}
    */
   Wallet._denominateSelfPayCoins = function (d, coinInfos, _outputs = []) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let DENOMS = d.__DENOMS__;
     let STAMP = d.__STAMP__;
     let MIN_STAMPS = d.__MIN_STAMPS__;
@@ -3487,6 +3525,10 @@
    * @return {DenomInfo}
    */
   Wallet._denominateToOutputs = function (d, coinInfos, _outputs = []) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let SATS_NUM_DIGITS = 8;
 
     let DENOMS = d.__DENOMS__;
@@ -3659,6 +3701,10 @@
    * @return {DenomInfo}
    */
   Wallet._denominateCoins = function (d, coinInfos, force = false) {
+    if (d === null) {
+      d = Wallet.__UNIT_TEST_DENOM_INFO__;
+    }
+
     let DENOMS = d.__DENOMS__;
     let STAMP = d.__STAMP__;
 

@@ -2,8 +2,7 @@
 
 let Wallet = require("../dashwallet.js");
 
-let STAMP = 200;
-let MIN_DENOM = 100000;
+let DENOM_INFO = null;
 
 // TODO
 // - what's the fee to split as-is?
@@ -140,7 +139,7 @@ function test() {
 
   console.info(`    Satoshis Value Fee Stamps | Coins`);
   for (let row of table) {
-    let coinInfo = Wallet._parseCoinInfo(MIN_DENOM, STAMP, row.satoshis);
+    let coinInfo = Wallet._parseCoinInfo(DENOM_INFO, row.satoshis);
     let v = calcResult(row, coinInfo);
     console.info(
       `✅ ${v.satoshis} ${v.faceDash} ${v.fee} ${v.stampsPerCoin} | ${v.dashDenomsList}`,
@@ -149,7 +148,7 @@ function test() {
 }
 
 function calcResult(row, coinInfo) {
-  let result = Wallet._denominateCoin(Wallet.DENOM_SATS, STAMP, coinInfo);
+  let result = Wallet._denominateCoin(DENOM_INFO, coinInfo);
 
   assertExpectedValues(row, result);
 
