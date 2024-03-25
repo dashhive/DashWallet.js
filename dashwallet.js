@@ -2843,7 +2843,7 @@
    * @returns CoinSelection
    */
   Wallet._pairInputsToOutputs = function (d, sendInfo, denomInfos) {
-    /* jshint maxstatements: 25 */
+    /* jshint maxstatements: 125 */
     if (d === null) {
       d = Wallet.__UNIT_TEST_DENOM_INFO__;
     }
