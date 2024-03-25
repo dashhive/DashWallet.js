@@ -2110,6 +2110,7 @@
      */
     async function _signFeeWalk(txInfoRaw, output, feeEstimate, change, keys) {
       let fees = DashTx.appraise(txInfoRaw);
+      // 1 = 193 - 192
       let limit = fees.max - feeEstimate;
 
       /** @type {import('dashtx').TxInfoSigned} */
@@ -2129,7 +2130,6 @@
         let outIndex = 0;
         if (hasExtra) {
           outIndex = txInfoRaw.outputs.length - 1;
-          change.satoshis -= 1;
         }
         txInfoRaw.outputs[outIndex].satoshis -= 1;
 
@@ -2142,8 +2142,9 @@
         if (fee <= feeEstimate) {
           break;
         }
+        feeEstimate += 1;
 
-        if (n >= limit) {
+        if (n >= limit || feeEstimate >= fees.max) {
           throw new Error(
             `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${feeEstimate}`,
           );
