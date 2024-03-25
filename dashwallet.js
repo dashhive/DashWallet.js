@@ -1375,6 +1375,8 @@
         err.code = "INCONCEIVABLE";
         throw err;
       }
+      txInfoRaw.inputs.sort(DashTx.sortInputs);
+      txInfoRaw.outputs.sort(DashTx.sortOutputs);
 
       let dashTx = DashTx.create();
       let keys;
@@ -1542,13 +1544,11 @@
       }
 
       let payAddresses = addrsInfo.addresses.slice(0);
-      fauxTxos.sort(Wallet.sortInputs);
       for (let output of outputs) {
         output = Object.assign(output, {
           address: payAddresses.pop(),
         });
       }
-      outputs.sort(Wallet.sortOutputs);
 
       for (let output of outputs) {
         //@ts-ignore TODO bad export
@@ -3084,84 +3084,6 @@
 
     return usable;
   }
-
-  /**
-   * Sort deterministic by Tx, VOut, Addr (all Asc), and Sats (Dsc)
-   *
-   * Note: it's important that it's deterministic (or random)
-   * to maintain the cash-like quality transfer - rather than
-   * by payee and change, which leaks more information to bad actors.
-   *
-   * TODO move to DashTx
-   *
-   * @param {CoreUtxo} a
-   * @param {CoreUtxo} b
-   * @returns Number
-   */
-  Wallet.sortInputs = function (a, b) {
-    // Ascending TxID (Lexicographical)
-    if (a.txId > b.txId) {
-      return 1;
-    }
-    if (a.txId < b.txId) {
-      return -1;
-    }
-
-    // Ascending Vout (Numerical)
-    let indexDiff = a.outputIndex - b.outputIndex;
-    if (indexDiff !== 0) {
-      return indexDiff;
-    }
-
-    // Ascending Address (Lexicographical)
-    if (a.address > b.address) {
-      return 1;
-    }
-    if (a.address < b.address) {
-      return -1;
-    }
-
-    // Descending Sats (Numberical)
-    return b.satoshis - a.satoshis;
-  };
-
-  /**
-   * Sort deterministic by Addr (all Asc), and Sats (Dsc)
-   *
-   * Note: it's important that it's deterministic (or random)
-   * to maintain the cash-like quality transfer - rather than
-   * by payee and change, which leaks more information to bad actors.
-   *
-   * TODO move to DashTx
-   *
-   * @param {TxOutput} a
-   * @param {TxOutput} b
-   * @returns Number
-   */
-  Wallet.sortOutputs = function (a, b) {
-    if (a.pubKeyHash && b.pubKeyHash) {
-      // Ascending PKH (Lexicographical)
-      if (a.pubKeyHash > b.pubKeyHash) {
-        return 1;
-      }
-      if (a.pubKeyHash < b.pubKeyHash) {
-        return -1;
-      }
-    }
-
-    if (a.address && b.address) {
-      // Ascending Address (Lexicographical)
-      if (a.address > b.address) {
-        return 1;
-      }
-      if (a.address < b.address) {
-        return -1;
-      }
-    }
-
-    // Descending Sats (Numberical)
-    return b.satoshis - a.satoshis;
-  };
 
   /**
    * Sort DenomInfos first by lowest face value first
