@@ -35,27 +35,6 @@
   /** @typedef {import('dashsight').InstantSend} InstantSend */
   /** @typedef {import('dashsight').InsightUtxo} InsightUtxo */
 
-  /** @typedef {TxInfoRaw & TxDraftPartial} TxDraft */
-  /**
-   * @typedef TxDraftPartial
-   * @prop {TxOutput} change
-   * @prop {Number} feeEstimate
-   * @prop {Boolean} fullTransfer
-   */
-
-  /** @typedef {TxInfoSigned & TxSummaryPartial} TxSummary */
-  /**
-   * @typedef TxSummaryPartial
-   * @prop {Number} total - sum of all inputs
-   * @prop {Number} sent - sum of all outputs
-   * @prop {Number} fee - actual fee
-   * @prop {Array<TxOutput>} outputs
-   * @prop {Array<import('dashtx').TxInput>} inputs
-   * @prop {TxOutput} output - alias of 'recipient' for backwards-compat
-   * @prop {TxOutput} recipient - output to recipient
-   * @prop {TxOutput} change - sent back to self
-   */
-
   /**
    * @typedef MaybeHasAddress
    * @prop {String} [address]
@@ -102,7 +81,7 @@
    * @return {Array<T>}
    */
   DashApi.selectOptimalUtxos = function (utxos, output) {
-    let balance = DashApi.getBalance(utxos);
+    let balance = DashTx.sum(utxos);
     let fees = DashTx.appraise({
       //@ts-ignore
       inputs: [{}],
@@ -160,34 +139,6 @@
       fullSats = fullSats + DashTx.MIN_INPUT_SIZE + 1;
     });
     return included;
-  };
-
-  /**
-   * @template {Pick<CoreUtxo, "satoshis">} T
-   * @param {Array<T>} utxos
-   * @returns {Number}
-   */
-  DashApi.getBalance = function (utxos) {
-    return utxos.reduce(function (total, utxo) {
-      return total + utxo.satoshis;
-    }, 0);
-  };
-
-  /**
-   * @param {Number} dash - as DASH (not duffs / satoshis)
-   * @returns {Number} - duffs
-   */
-  DashApi.toDuff = function (dash) {
-    return Math.round(dash * DUFFS);
-  };
-
-  /**
-   * @param {Number} satoshis
-   * @returns {Number} - float
-   */
-  DashApi.toDash = function (satoshis) {
-    let floatBalance = parseFloat((satoshis / DUFFS).toFixed(8));
-    return floatBalance;
   };
 
   let COIN_TYPE = 5;
@@ -326,7 +277,7 @@
    * Find a private wallet by handle
    * @callback FindPrivateWallets
    * @param {FindFriendOpts} opts
-   * @returns {Array<PrivateWallet>} - wallets matching this friend
+   * @returns {Promise<Array<PrivateWallet>>} - wallets matching this friend
    */
 
   /**
@@ -378,9 +329,11 @@
 
   Wallet.DashTypes = DashApi.DashTypes;
   Wallet.DUFFS = DashApi.DUFFS;
-  Wallet.getBalance = DashApi.getBalance;
-  Wallet.toDash = DashApi.toDash;
-  Wallet.toDuff = DashApi.toDuff;
+  //@ts-ignore - TODO
+  Wallet.sum = DashTx.sum;
+  //@ts-ignore - TODO
+  Wallet.toDash = DashTx.toDash;
+  Wallet.toSats = DashTx.toSats;
   Wallet.DENOM_AMOUNTS = [
     1000, 500, 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01,
     0.005, 0.002, 0.001,
@@ -983,6 +936,7 @@
 
         if (addrInfo.txs.length) {
           if (!allowReuse) {
+            //@ts-ignore - TODO
             throw createReuseError(addrInfo.address);
           }
         }
@@ -1106,6 +1060,7 @@
 
       if (!available.length) {
         if (!allowReuse) {
+          //@ts-ignore - TODO
           throw createReuseError(lastAddr);
         }
         available.push(payWallet.addr);
@@ -1122,16 +1077,12 @@
     }
 
     /**
-     * @param {String} address
+     * @param {String} lastAddress
      */
     function createReuseError(lastAddress) {
-      let err = new Error(
-        `no unused addresses are available (set 'allowReuse' to use the most recent)`,
-      );
-      //@ts-ignore
-      err.code = `E_NO_UNUSED_ADDR`;
-      err.lastAddress = lastAddress;
-
+      let msg = `no unused addresses are available (set 'allowReuse' to use the most recent)`;
+      let err = new Error(msg);
+      Object.assign({ code: `E_NO_UNUSED_ADDR`, lastAddress: lastAddress });
       return err;
     }
 
@@ -1292,6 +1243,7 @@
         change: cashLikeInfo.change,
       };
 
+      //@ts-ignore - TODO
       return selection;
     };
 
@@ -1344,9 +1296,9 @@
 
       let maxSats = maxDenoms * d.__MIN_DENOM__;
 
-      let dashInput = DashApi.toDash(outputInfo.satoshis);
-      let dashNeeded = DashApi.toDash(satsNeeded);
-      let maxDash = DashApi.toDash(maxSats);
+      let dashInput = DashTx.toDash(outputInfo.satoshis);
+      let dashNeeded = DashTx.toDash(satsNeeded);
+      let maxDash = DashTx.toDash(maxSats);
 
       let err = new Error(
         `cannot spend Đ${dashInput} without breaking change: add another coin of between Đ${dashNeeded} and Đ${maxDash}, or break change first`,
@@ -1440,7 +1392,7 @@
       // TODO try first to hit the target output values
       if (!inputs) {
         let utxos = wallet.utxos();
-        inputs = Wallet._mustSelectInputs({
+        inputs = DashTx._legacyMustSelectInputs({
           utxos: utxos,
           satoshis: satoshis,
         });
@@ -1448,7 +1400,7 @@
 
       let fauxTxos = inputs;
       //let fauxTxos = await inputListToFauxTxos(wallet, inputList);
-      let balance = Wallet.getBalance(fauxTxos);
+      let balance = DashTx.sum(fauxTxos);
 
       // TODO XXX check determine if it's already denominated
       // - last 5 digits mod 200 with no leftover
@@ -1547,6 +1499,7 @@
 
       console.info(outputs);
       console.info(
+        //@ts-ignore - TODO
         `Fee:  ${feeStr}  (${inputs.length} inputs, ${outputs.length} outputs)`,
       );
       console.info(
@@ -1626,6 +1579,7 @@
 
       let dirtyTx = await wallet.createDirtyTx({
         inputs: utxos,
+        //@ts-ignore - TODO
         output: { address: addrsInfo.addresses[0], satoshis: satoshis },
       });
 
@@ -1711,20 +1665,20 @@
     }) {
       if (!inputs) {
         let utxos = wallet.utxos();
-        inputs = Wallet._mustSelectInputs({
+        inputs = DashTx._legacyMustSelectInputs({
           utxos: utxos,
           satoshis: satoshis,
         });
       }
 
-      let totalAvailable = DashApi.getBalance(inputs);
+      let totalAvailable = DashTx.sum(inputs);
       let fees = DashTx.appraise({ inputs: inputs, outputs: [] });
 
       if (satoshis > 0) {
         let belowMaxFee = satoshis < fees.max;
         if (belowMaxFee) {
-          let donationAmount = DashApi.toDash(satoshis);
-          let feeAmount = DashApi.toDash(fees.max);
+          let donationAmount = DashTx.toDash(satoshis);
+          let feeAmount = DashTx.toDash(fees.max);
           throw new Error(
             `'${donationAmount}' does not meet the minmium donation of ${feeAmount}`,
           );
@@ -1736,7 +1690,7 @@
         if (tooGenerous) {
           let isVeryGenerous = forceDonation === satoshis;
           if (!isVeryGenerous) {
-            let donationAmount = DashApi.toDash(satoshis);
+            let donationAmount = DashTx.toDash(satoshis);
             let err = new Error(
               `rejecting possibly accidental donation of ${donationAmount}`,
             );
@@ -1784,6 +1738,7 @@
         outputs: outputs,
         _DANGER_donate: true,
       };
+      //@ts-ignore - TODO
       let keys = await wallet._utxosToPrivKeys(inputs);
       let txInfo = await dashTx.hashAndSignAll(txInfoRaw, keys);
 
@@ -1811,7 +1766,12 @@
         utxos = wallet.utxos();
       }
 
-      let txDraft = wallet.legacy.draftTx({ utxos, inputs, output });
+      if (!inputs) {
+        if (!utxos) {
+          utxos = wallet.utxos();
+        }
+      }
+      let txDraft = dashTx.legacy.draftSingleOutput({ utxos, inputs, output });
 
       if (txDraft.change) {
         let count = 1;
@@ -1841,113 +1801,16 @@
 
       let keys = await wallet._utxosToPrivKeys(txDraft.inputs);
 
-      let txSummary = await Wallet.legacy.finalizeAndSignTx(txDraft, keys);
+      let txSummary = await dashTx.legacy.finalizePresorted(txDraft, keys);
 
       await wallet._authDirtyTx({ summary: txSummary, now: now });
 
       return txSummary;
     };
 
-    wallet.legacy = {};
-
     /**
      * @param {Object} opts
-     * @param {Array<CoreUtxo>?} [opts.inputs]
-     * @param {Array<CoreUtxo>?} [opts.utxos]
-     * @param {import('dashtx').TxOutput} opts.output
-     * @returns {TxDraft}
-     */
-    wallet.legacy.draftTx = function ({ utxos, inputs, output }) {
-      let fullTransfer = false;
-
-      if (!inputs) {
-        if (!utxos) {
-          utxos = wallet.utxos();
-        }
-        inputs = Wallet._mustSelectInputs({
-          utxos: utxos,
-          satoshis: output.satoshis,
-        });
-      } else {
-        fullTransfer = !output.satoshis;
-      }
-
-      let totalAvailable = DashApi.getBalance(inputs);
-      let fees = DashTx.appraise({ inputs: inputs, outputs: [output] });
-
-      //let EXTRA_SIG_BYTES_PER_INPUT = 2;
-      let CHANCE_INPUT_SIGS_HAVE_NO_EXTRA_BYTES = 1 / 4;
-      let MINIMUM_CHANCE_SIG_MATCHES_TARGET = 1 / 20;
-
-      let feeEstimate = fees.min;
-      let chanceSignaturesMatchLowestFee = Math.pow(
-        CHANCE_INPUT_SIGS_HAVE_NO_EXTRA_BYTES,
-        inputs.length,
-      );
-      let minimumIsUnlikely =
-        chanceSignaturesMatchLowestFee < MINIMUM_CHANCE_SIG_MATCHES_TARGET;
-      if (minimumIsUnlikely) {
-        //let likelyPadByteSize = EXTRA_SIG_BYTES_PER_INPUT * inputs.length;
-        let likelyPadByteSize = inputs.length;
-        feeEstimate += likelyPadByteSize;
-      }
-
-      let recip = Object.assign({}, output);
-      if (!recip.satoshis) {
-        recip.satoshis = totalAvailable + -feeEstimate;
-      }
-      let outputs = [recip];
-
-      let change = { address: "", satoshis: 0 };
-      change.satoshis =
-        totalAvailable + -recip.satoshis + -feeEstimate + -DashTx.OUTPUT_SIZE;
-      let hasChange = change.satoshis > DashApi.DUST;
-
-      if (hasChange) {
-        outputs.push(change);
-        feeEstimate += DashTx.OUTPUT_SIZE;
-      } else {
-        // Re: Dash Direct: we round in favor of the network (exact payments)
-        feeEstimate = totalAvailable + -recip.satoshis;
-      }
-
-      let txInfoRaw = {
-        inputs,
-        outputs,
-        change,
-        feeEstimate,
-        fullTransfer,
-      };
-
-      return txInfoRaw;
-    };
-
-    /**
-     * @param {TxDraft} txDraft
-     * @param {Array<Uint8Array>} keys
-     * @returns {Promise<TxSummary>}
-     */
-    wallet.legacy.finalizeAndSignTx = async function (txDraft, keys) {
-      /** @type {import('dashtx').TxInfoSigned} */
-      let txSigned = await _signToTarget(txDraft, keys).catch(
-        async function (e) {
-          //@ts-ignore
-          if ("E_NO_ENTROPY" !== e.code) {
-            throw e;
-          }
-
-          let _txSigned = await _signFeeWalk(txDraft, keys);
-          return _txSigned;
-        },
-      );
-
-      let txSummary = _summarizeLegacyTx(txSigned);
-      return txSummary;
-    };
-
-    /**
-     * @param {Object} opts
-     * @param {TxSummary} opts.summary
+     * @param {import('dashtx').TxSummary} opts.summary
      * @param {Number} [opts.now] - ms
      */
     wallet._authDirtyTx = async function ({ summary, now = Date.now() }) {
@@ -2055,129 +1918,6 @@
       });
 
       return summary;
-    }
-
-    /**
-     * @param {TxInfoSigned} txInfo
-     * @returns {TxSummary}
-     */
-    function _summarizeLegacyTx(txInfo) {
-      let totalAvailable = 0;
-      for (let coin of txInfo.inputs) {
-        //@ts-ignore - our inputs are mixed with CoreUtxo
-        totalAvailable += coin.satoshis;
-      }
-
-      let recipient = txInfo.outputs[0];
-      // to satisfy tsc
-      if (!recipient.address) {
-        recipient.address = "";
-      }
-
-      let sent = recipient.satoshis;
-      let fee = totalAvailable - sent;
-
-      let changeSats = 0;
-      let change = txInfo.outputs[1];
-      if (change) {
-        changeSats = change.satoshis;
-      }
-      fee -= changeSats;
-
-      let summaryPartial = {
-        total: totalAvailable,
-        sent: sent,
-        fee: fee,
-        output: recipient,
-        recipient: recipient,
-        change: change,
-      };
-      let summary = Object.assign({}, txInfo, summaryPartial);
-
-      return summary;
-    }
-
-    /**
-     * @param {TxDraft} txDraft
-     * @param {Array<Uint8Array>} keys
-     * @returns {Promise<TxInfoSigned>}
-     */
-    async function _signToTarget(txDraft, keys) {
-      let limit = 128;
-      let lastTx = "";
-      let hasEntropy = true;
-
-      /** @type {import('dashtx').TxInfoSigned} */
-      let txSigned;
-
-      for (let n = 0; true; n += 1) {
-        txSigned = await dashTx.hashAndSignAll(txDraft, keys);
-
-        lastTx = txSigned.transaction;
-        let fee = txSigned.transaction.length / 2;
-        if (fee <= txDraft.feeEstimate) {
-          break;
-        }
-
-        if (txSigned.transaction === lastTx) {
-          hasEntropy = false;
-          break;
-        }
-        if (n >= limit) {
-          throw new Error(
-            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${txDraft.feeEstimate}`,
-          );
-        }
-      }
-
-      return txSigned;
-    }
-
-    /**
-     * Strategy for signing transactions when a non-entropy signing method is used -
-     * exhaustively walk each possible signature until one that works is found.
-     * @param {TxDraft} txDraft
-     * @param {Array<Uint8Array>} keys
-     * @returns {Promise<TxInfoSigned>}
-     */
-    async function _signFeeWalk(txDraft, keys) {
-      let fees = DashTx.appraise(txDraft);
-      let limit = fees.max - txDraft.feeEstimate;
-
-      /** @type TxInfoSigned */
-      let txSigned;
-
-      for (let n = 0; true; n += 1) {
-        let hasChange = txDraft.change?.satoshis > 0;
-        let canIncreaseFee = txDraft.fullTransfer || hasChange;
-        if (!canIncreaseFee) {
-          // TODO try to add another utxo before failing
-          throw new Error(
-            `no signing entropy and the fee variance is too low to cover the marginal cost of all possible signature iterations`,
-          );
-        }
-
-        let outIndex = 0;
-        if (hasChange) {
-          outIndex = txDraft.outputs.length - 1;
-        }
-        txDraft.outputs[outIndex].satoshis -= 1;
-
-        txSigned = await dashTx.hashAndSignAll(txDraft, keys);
-
-        let fee = txSigned.transaction.length / 2;
-        if (fee <= txDraft.feeEstimate) {
-          break;
-        }
-
-        if (n >= limit) {
-          throw new Error(
-            `(near-)infinite loop: fee is ${fee} trying to hit target fee of ${txDraft.feeEstimate}`,
-          );
-        }
-      }
-
-      return txSigned;
     }
 
     // TODO nix
@@ -2801,48 +2541,6 @@
   };
 
   /**
-   * @param {Array<CoreUtxo>} allInputs
-   * @param {Number} satoshis
-   */
-  Wallet._createInsufficientFundsError = function (allInputs, satoshis) {
-    let totalBalance = DashApi.getBalance(allInputs);
-    let dashBalance = DashApi.toDash(totalBalance);
-    let dashAmount = DashApi.toDash(satoshis);
-    let fees = DashTx.appraise({
-      inputs: allInputs,
-      outputs: [{}],
-    });
-    let feeAmount = DashApi.toDash(fees.mid);
-
-    let err = new Error(
-      `insufficient funds: cannot pay ${dashAmount} (+${feeAmount} fee) with ${dashBalance}`,
-    );
-    throw err;
-  };
-
-  /**
-   * @param {Object} opts
-   * @param {Array<CoreUtxo>} opts.utxos
-   * @param {Number} [opts.satoshis]
-   * @param {Number} [opts.now] - ms
-   */
-  Wallet._mustSelectInputs = function ({ utxos, satoshis }) {
-    if (!satoshis) {
-      let msg = `expected target selection value 'satoshis' to be a positive integer but got '${satoshis}'`;
-      let err = new Error(msg);
-      throw err;
-    }
-
-    let selected = DashApi.selectOptimalUtxos(utxos, satoshis);
-
-    if (!selected.length) {
-      throw Wallet._createInsufficientFundsError(utxos, satoshis);
-    }
-
-    return selected;
-  };
-
-  /**
    * Returns clamped value, number of stamps, and unusable dust
    * @param {DenomConfig} d
    * @param {Number} satoshis
@@ -3060,9 +2758,9 @@
     totalDiff = totalFaceValue - totalSelectedSats;
     // console.log("[DEBUG] 3rd selection diff:", totalDiff);
     if (totalDiff > 0) {
-      let dashReqValue = DashApi.toDash(totalFaceValue).toFixed(3);
-      //let dashFaceValue = DashApi.toDash(selectedFaceValue).toFixed(3);
-      let dashFaceValue = DashApi.toDash(totalSelectedSats).toFixed(8);
+      let dashReqValue = DashTx.toDash(totalFaceValue).toFixed(3);
+      //let dashFaceValue = DashTx.toDash(selectedFaceValue).toFixed(3);
+      let dashFaceValue = DashTx.toDash(totalSelectedSats).toFixed(8);
       let err = new Error(
         `cannot accumulate ${dashReqValue} with the coins provided (${dashFaceValue})`,
       );
