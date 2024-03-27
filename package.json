@@ -6,7 +6,6 @@
   "bin": {},
   "files": [
     "index.js",
-    "lib/",
     "dashwallet.js"
   ],
   "scripts": {
