@@ -267,7 +267,7 @@
    * Find a friend's xpub key
    * @callback FindPayWallets
    * @param {FindFriendOpts} opts
-   * @returns {Array<PayWallet>} - wallets matching this friend
+   * @returns {Promise<Array<PayWallet>>} - wallets matching this friend
    *
    * @typedef FindFriendOpts
    * @prop {String} handle
