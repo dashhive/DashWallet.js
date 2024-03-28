@@ -6,6 +6,7 @@ module.exports = require("./dashwallet.js");
 
 // these typedef reexports will be available to dependent packages
 /**
+ * @typedef {import('./dashwallet.js').MaybeHasAddress} MaybeHasAddress
  * @typedef {import('./dashwallet.js').MiniUtxo} MiniUtxo
  * @typedef {import('./dashwallet.js').CoinInfo} CoinInfo
  * @typedef {import('./dashwallet.js').DenomInfo} DenomInfo
