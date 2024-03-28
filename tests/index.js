@@ -5,6 +5,8 @@ let Fs = require("node:fs/promises");
 let Path = require("node:path");
 
 async function main() {
+  console.info("TAP version 13");
+
   let dirents = await Fs.readdir(__dirname, { withFileTypes: true });
 
   let failures = 0;
@@ -23,13 +25,14 @@ async function main() {
       failures += 1;
     }
   }
-  if (failures === 0) {
-    console.info("# PASS");
-  } else {
-    console.info("# FAIL");
-  }
 
-  console.info("TAP version 13");
+  let passes = count - failures;
+  console.info(``);
+  console.info(`1..${count}`);
+  console.info(`# tests ${count}`);
+  console.info(`# pass  ${passes}`);
+  console.info(`# fail  ${failures}`);
+  console.info(`# skip  0`);
 
   if (failures !== 0) {
     process.exit(1);
